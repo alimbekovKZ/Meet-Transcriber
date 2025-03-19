@@ -1,18 +1,30 @@
-// const OPENAI_API_KEY = "sk-proj-7qbsSITJhiFiuRwD-s5rlOFCqrJTfxSgJqszhwB2se_W2gsqEdvpl8I5HBlZzVuK8jL0CxVoJhT3BlbkFJbOtzeT6Oobb0MyruWEuA-PCFQWs4QRRrxgLhVSPsr74P2cpojwzUSYsWrr72_EIsZQln6VPjY"; // 🔑 Вставь свой API-ключ OpenAI
+// const OPENAI_API_KEY = "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"; // 🔑 Вставь свой API-ключ OpenAI
+
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.action === "sendAudio") {
+    if (message.type === "sendAudioToWhisper") {
         (async () => {
             try {
-                console.log("📩 Получен аудиофайл, отправляем на OpenAI Whisper...");
+                console.log("📩 Получен аудиофайл, конвертируем...");
+
+                const byteCharacters = atob(message.file.split(',')[1]); // Декодируем Base64
+                const byteNumbers = new Array(byteCharacters.length);
+                for (let i = 0; i < byteCharacters.length; i++) {
+                    byteNumbers[i] = byteCharacters.charCodeAt(i);
+                }
+                const byteArray = new Uint8Array(byteNumbers);
+                const audioBlob = new Blob([byteArray], { type: "audio/wav" });
+
+                console.log("🔄 Файл успешно декодирован!");
 
                 const OPENAI_API_URL = "https://api.openai.com/v1/audio/transcriptions";
-                const OPENAI_API_KEY = "your-api-key"; // 🔑 Вставь свой API-ключ OpenAI
+                
+                const OPENAI_API_KEY = "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"; // 🔑 Вставь API-ключ OpenAI
 
                 const formData = new FormData();
-                formData.append("file", message.audioBlob, "recording.wav");
+                formData.append("file", audioBlob, "recording.wav");
                 formData.append("model", "whisper-1");
-                formData.append("language", "ru"); // Укажи нужный язык (например, "ru" для русского)
+                formData.append("language", "ru"); // Укажи нужный язык
 
                 console.log("🌍 Отправка запроса в:", OPENAI_API_URL);
 
@@ -28,6 +40,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 console.log("📥 Ответ от Whisper:", result);
 
                 if (response.ok) {
+                    saveTranscriptionToFile(result.text);
                     sendResponse({ status: "✅ Аудиофайл обработан", transcription: result.text });
                 } else {
                     console.error("⚠ Ошибка от OpenAI:", result);
@@ -39,6 +52,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             }
         })();
 
-        return true; // ВАЖНО: Говорим Chrome, что ответ придёт асинхронно
+        return true; // 🚀 ВАЖНО: Chrome будет ждать sendResponse
     }
 });
+
+// Функция сохранения транскрипции в .txt
+function saveTranscriptionToFile(transcription) {
+    const blob = new Blob([transcription], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "transcription.txt";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
