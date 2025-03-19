@@ -56,6 +56,19 @@ async function stopRecording() {
             const audioBlob = new Blob(audioChunks, { type: "audio/wav" });
             console.log("💾 Аудио-файл сформирован:", audioBlob);
 
+            chrome.runtime.sendMessage({
+                type: "sendAudioToWhisper",
+                file: audioBlob
+            }, (response) => {
+                if (chrome.runtime.lastError) {
+                    console.error("❌ Ошибка отправки сообщения:", chrome.runtime.lastError.message);
+                } else {
+                    console.log("✅ Сообщение отправлено в background.js, ответ:", response);
+                }
+            });
+        
+            console.log("📩 Аудиофайл отправлен в background.js");
+
             await saveFile(audioBlob);
         };
     }
