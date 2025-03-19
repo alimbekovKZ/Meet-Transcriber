@@ -8,16 +8,16 @@
   - `background`
   - `fileSystem`
   - `audioCapture`
-- [ ] Создать структуру проекта:
-  - [ ] Папка `src`
-  - [ ] Файл `content.js`
-  - [ ] Файл `background.js`
-  - [ ] Файл `popup.js`
-  - [ ] Файл `popup.html`
-  - [ ] Файл `options.html`
-  - [ ] Файл `styles.css`
-- [ ] Настроить `package.json` (если используем npm)
-- [ ] Добавить `README.md` с кратким описанием проекта
+- [X] Создать структуру проекта:
+  - [X] Папка `src`
+  - [X] Файл `content.js`
+  - [X] Файл `background.js`
+  - [X] Файл `popup.js`
+  - [X] Файл `popup.html`
+  - [X] Файл `options.html`
+  - [X] Файл `styles.css`
+- [X] Настроить `package.json` (если используем npm)
+- [X] Добавить `README.md` с кратким описанием проекта
 
 ---
 
