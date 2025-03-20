@@ -1,35 +1,36 @@
 {
-    "manifest_version": 3,
-    "name": "Google Meet Transcription Plugin",
-    "description": "Plugin for transcribing Google Meet calls.",
-    "version": "1.0",
-    "permissions": [
-      "activeTab",
-      "storage",
-      "tabs",
-      "identity"
-    ],
-    "background": {
-      "service_worker": "src/background.js"
-    },
-    "content_scripts": [
-      {
-        "matches": ["https://meet.google.com/*"],
-        "js": ["src/content.js"]
-      }
-    ],
-    "action": {
-      "default_popup": "src/popup.html",
-      "default_icon": {
-        "16": "images/icon16.png",
-        "48": "images/icon48.png",
-        "128": "images/icon128.png"
-      }
-    },
-    "options_page": "src/options.html",
-    "host_permissions": [
-      "http://*/",
-      "https://*/"
-    ]
-  }
-  
+  "manifest_version": 3,
+  "name": "Google Meet Transcription Plugin",
+  "description": "Плагин для автоматической транскрибации звонков в Google Meet",
+  "version": "1.0",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "tabs",
+    "identity",
+    "notifications",
+    "tabCapture"
+  ],
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://meet.google.com/*"],
+      "js": ["src/content.js"]
+    }
+  ],
+  "action": {
+    "default_popup": "src/popup.html",
+    "default_icon": {
+      "16": "images/icon16.png",
+      "48": "images/icon48.png",
+      "128": "images/icon128.png"
+    }
+  },
+  "options_page": "src/options.html",
+  "host_permissions": [
+    "https://api.openai.com/*",
+    "https://meet.google.com/*"
+  ]
+}

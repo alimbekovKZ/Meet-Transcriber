@@ -1,15 +1,33 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Transcription</title>
+  <title>Google Meet Transcription</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <h1>Google Meet Transcription</h1>
-  <button id="startBtn">Start Transcription</button>
-  <button id="stopBtn">Stop Transcription</button>
+  <div class="container">
+    <header>
+      <h1>Google Meet Transcription</h1>
+      <div class="status-indicator" id="statusIndicator"></div>
+    </header>
+    
+    <div class="meeting-info" id="meetingInfo">
+      <p>Нет активного звонка</p>
+    </div>
+    
+    <div class="controls">
+      <button id="startBtn" class="btn primary">Начать запись</button>
+      <button id="stopBtn" class="btn danger">Остановить запись</button>
+      <button id="disableBtn" class="btn secondary">Не записывать эту встречу</button>
+    </div>
+    
+    <div class="footer">
+      <button id="settingsBtn" class="btn link">Настройки</button>
+    </div>
+  </div>
+  
   <script src="popup.js"></script>
 </body>
 </html>

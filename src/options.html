@@ -1,14 +1,100 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Options</title>
+  <title>Google Meet Transcription - Настройки</title>
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <h1>Plugin Options</h1>
-  <form>
-    <!-- Параметры настройки плагина -->
-  </form>
+  <div class="options-container">
+    <h1>Настройки плагина Google Meet Transcription</h1>
+    
+    <div id="alertMessage" class="alert" style="display: none;"></div>
+    
+    <form id="optionsForm">
+      <!-- API Service Selection -->
+      <div class="form-group">
+        <label>Сервис транскрибации:</label>
+        <div class="radio-group">
+          <div class="radio-option">
+            <input type="radio" id="serviceOpenAI" name="apiService" value="openai" checked>
+            <label for="serviceOpenAI">OpenAI Whisper</label>
+          </div>
+          <div class="radio-option">
+            <input type="radio" id="serviceCustom" name="apiService" value="custom">
+            <label for="serviceCustom">Другой сервис</label>
+          </div>
+        </div>
+      </div>
+      
+      <!-- API Key -->
+      <div class="form-group">
+        <label for="apiKey">API Key:</label>
+        <input type="password" id="apiKey" placeholder="Введите ключ API" required>
+        <small id="apiKeyHelp">Ваш API-ключ для доступа к сервису транскрибации.</small>
+      </div>
+      
+      <!-- API URL -->
+      <div class="form-group" id="apiUrlGroup">
+        <label for="apiUrl">API URL:</label>
+        <input type="text" id="apiUrl" placeholder="https://api.openai.com/v1/audio/transcriptions">
+        <small>URL API-сервиса для транскрибации.</small>
+        <div class="api-key-warning">
+          <strong>Важно:</strong> Для ключей формата "sk-proj-..." требуется правильный URL эндпоинта и метод аутентификации.
+        </div>
+      </div>
+      
+      <!-- Authentication Method -->
+      <div class="form-group" id="authMethodGroup">
+        <label for="authMethod">Метод аутентификации:</label>
+        <select id="authMethod">
+          <option value="bearer">Bearer Token</option>
+          <option value="apikey">API Key Header</option>
+          <option value="basic">Basic Auth</option>
+          <option value="custom">Пользовательский</option>
+        </select>
+        <small>Выберите способ передачи ключа API.</small>
+      </div>
+      
+      <div class="form-group">
+        <label>Основные настройки:</label>
+        
+        <div class="form-check">
+          <input type="checkbox" id="autoTranscription" checked>
+          <label for="autoTranscription">Автоматически начинать запись при входе в звонок</label>
+        </div>
+        
+        <div class="form-check">
+          <input type="checkbox" id="enableNotifications" checked>
+          <label for="enableNotifications">Показывать уведомления</label>
+        </div>
+      </div>
+      
+      <div class="form-group">
+        <label for="defaultLanguage">Язык транскрипции по умолчанию:</label>
+        <select id="defaultLanguage">
+          <option value="ru">Русский</option>
+          <option value="en">Английский</option>
+          <option value="fr">Французский</option>
+          <option value="de">Немецкий</option>
+          <option value="es">Испанский</option>
+          <option value="it">Итальянский</option>
+          <option value="ja">Японский</option>
+          <option value="zh">Китайский</option>
+        </select>
+      </div>
+      
+      <div class="form-group">
+        <label for="filenameTemplate">Шаблон имени файла:</label>
+        <input type="text" id="filenameTemplate" value="transcription_[MEETING]_[DATE]_[TIME]">
+        <small>Доступные переменные: [MEETING], [DATE], [TIME]</small>
+      </div>
+      
+      <button type="submit" class="save-button">Сохранить настройки</button>
+    </form>
+  </div>
+  
+  <script src="options.js"></script>
 </body>
 </html>
