@@ -9,7 +9,9 @@
     "tabs",
     "identity",
     "notifications",
-    "tabCapture"
+    "tabCapture",
+    "downloads",
+    "scripting"
   ],
   "background": {
     "service_worker": "src/background.js"

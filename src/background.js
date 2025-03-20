@@ -128,58 +128,88 @@ function generateFilename(meetingName) {
     return `transcription_${cleanName}_${formattedDate}_${formattedTime}.txt`;
 }
 
-// Save transcription to file using FileSystem API
+// Save transcription to file using download method
 async function saveTranscriptionToFile(transcription, filename) {
     try {
         // Create a blob from the transcription text
         const blob = new Blob([transcription], { type: "text/plain" });
         
-        // Use the File System Access API if available
-        if ('showSaveFilePicker' in window) {
-            console.log("💾 Используем File System Access API для сохранения");
-            
-            const options = {
-                suggestedName: filename,
-                types: [{
-                    description: 'Text Files',
-                    accept: { 'text/plain': ['.txt'] },
-                }],
-            };
-            
-            try {
-                // Show file picker dialog
-                const fileHandle = await window.showSaveFilePicker(options);
-                // Create a writable stream
-                const writable = await fileHandle.createWritable();
-                // Write the contents
-                await writable.write(blob);
-                // Close the file and write the contents to disk
-                await writable.close();
-                
-                console.log(`✅ Файл успешно сохранён через FileSystem API: ${filename}`);
-                return true;
-            } catch (err) {
-                // If user cancels the save dialog or any other error occurs, fall back to download method
-                console.warn("⚠️ Не удалось использовать FileSystem API, переключаемся на fallback метод:", err);
-            }
-        }
+        // Standard download method that works in background script
+        console.log("💾 Создаем файл для скачивания");
         
-        // Fallback method (if FileSystem API is not available or fails)
-        console.log("💾 Используем стандартный метод скачивания файла");
+        // Use chrome.downloads API for reliable file saving from background
         const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
         
-        console.log(`✅ Файл сохранён через стандартный метод скачивания: ${filename}`);
+        chrome.downloads.download({
+            url: url,
+            filename: filename,
+            saveAs: false
+        }, (downloadId) => {
+            if (chrome.runtime.lastError) {
+                console.error("❌ Ошибка при скачивании:", chrome.runtime.lastError.message);
+            } else {
+                console.log(`✅ Скачивание файла начато, ID: ${downloadId}`);
+            }
+            // Revoke URL after download starts
+            URL.revokeObjectURL(url);
+        });
+        
+        console.log(`✅ Запрос на скачивание файла отправлен: ${filename}`);
         return true;
     } catch (error) {
         console.error("❌ Ошибка при сохранении файла:", error);
-        return false;
+        
+        // Attempt fallback method if the download API fails
+        try {
+            const blob = new Blob([transcription], { type: "text/plain" });
+            const url = URL.createObjectURL(blob);
+            
+            // Create a new tab with the text content
+            chrome.tabs.create({ url: url }, (tab) => {
+                console.log("📄 Открыт новый таб с текстом транскрипции. Пользователь может сохранить вручную.");
+                
+                // Add a listener to close the tab when download is complete
+                chrome.tabs.onUpdated.addListener(function listener(tabId, info) {
+                    if (tabId === tab.id && info.status === 'complete') {
+                        chrome.tabs.onUpdated.removeListener(listener);
+                        
+                        // Execute content script to add download button
+                        chrome.scripting.executeScript({
+                            target: { tabId: tab.id },
+                            function: (filename) => {
+                                const downloadBtn = document.createElement('button');
+                                downloadBtn.textContent = 'Скачать транскрипцию';
+                                downloadBtn.style.position = 'fixed';
+                                downloadBtn.style.top = '10px';
+                                downloadBtn.style.left = '10px';
+                                downloadBtn.style.zIndex = '9999';
+                                downloadBtn.style.padding = '10px';
+                                downloadBtn.style.backgroundColor = '#1a73e8';
+                                downloadBtn.style.color = 'white';
+                                downloadBtn.style.border = 'none';
+                                downloadBtn.style.borderRadius = '4px';
+                                downloadBtn.style.cursor = 'pointer';
+                                
+                                downloadBtn.onclick = () => {
+                                    const a = document.createElement('a');
+                                    a.href = window.location.href;
+                                    a.download = filename;
+                                    a.click();
+                                };
+                                
+                                document.body.prepend(downloadBtn);
+                            },
+                            args: [filename]
+                        });
+                    }
+                });
+            });
+            
+            return true;
+        } catch (fallbackError) {
+            console.error("❌ Ошибка при использовании запасного метода:", fallbackError);
+            return false;
+        }
     }
 }
 
