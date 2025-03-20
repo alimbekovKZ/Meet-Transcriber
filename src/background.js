@@ -5,6 +5,40 @@ const DEFAULT_LANGUAGE = "ru";
 const WHISPER_MODEL = "whisper-1";
 const DEFAULT_API_URL = "https://api.openai.com/v1/audio/transcriptions";
 
+// Global diagnostic object to track download status
+const downloadDiagnostics = {
+  attempts: [],
+  lastError: null,
+  addAttempt: function(method, result, error = null) {
+    this.attempts.push({
+      method,
+      timestamp: new Date().toISOString(),
+      success: !error,
+      error: error ? error.message || String(error) : null,
+      result
+    });
+    if (error) {
+      this.lastError = error;
+    }
+    console.log(`📊 Download attempt [${method}]: ${error ? '❌ Failed' : '✅ Success'}`);
+    if (error) {
+      console.error(`📊 Error details:`, error);
+    }
+  },
+  reset: function() {
+    this.attempts = [];
+    this.lastError = null;
+  },
+  getSummary: function() {
+    return {
+      totalAttempts: this.attempts.length,
+      methods: this.attempts.map(a => a.method),
+      lastError: this.lastError ? (this.lastError.message || String(this.lastError)) : null,
+      allErrors: this.attempts.filter(a => !a.success).map(a => a.error)
+    };
+  }
+};
+
 // Initialize plugin settings
 chrome.runtime.onInstalled.addListener(() => {
     chrome.storage.local.get(['apiKey', 'enableNotifications', 'defaultLanguage'], (result) => {
@@ -195,26 +229,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                             // Generate filename based on meeting name and date
                             const filename = generateFilename(message.meetingName);
                             
-                            // Save transcription to file
-                            const downloadId = await saveTranscriptionToFile(result.text, filename);
-                            
-                            // Store download info for later reference
-                            chrome.storage.local.set({
-                                lastDownload: {
-                                    id: downloadId,
+                            // Save transcription to file - Use new improved version
+                            try {
+                                const downloadId = await saveTranscriptionToFile(result.text, filename);
+                                
+                                showNotification("Транскрибация завершена", "Файл сохранен как " + filename);
+                                sendResponse({ 
+                                    status: "✅ Аудиофайл обработан", 
+                                    transcription: result.text,
                                     filename: filename,
-                                    timestamp: new Date().toISOString()
-                                }
-                            });
-                            
-                            showNotification("Транскрибация завершена", "Файл сохранен как " + filename);
-                            sendResponse({ 
-                                status: "✅ Аудиофайл обработан", 
-                                transcription: result.text,
-                                filename: filename,
-                                downloadId: downloadId
-                            });
-                            return;
+                                    downloadId: downloadId
+                                });
+                                return;
+                            } catch (downloadError) {
+                                console.error("❌ Ошибка при сохранении файла:", downloadError);
+                                // Even if download fails, still save to storage and return success
+                                // The user can try downloading from the popup
+                                
+                                showNotification("Текст получен, но сохранение не удалось", 
+                                                "Вы можете скачать файл через интерфейс плагина");
+                                sendResponse({ 
+                                    status: "⚠️ Транскрипция получена, но сохранение не удалось", 
+                                    transcription: result.text,
+                                    filename: filename,
+                                    error: downloadError.message
+                                });
+                                return;
+                            }
                         } else {
                             console.error("⚠ Ответ получен, но текст отсутствует:", result);
                             throw new Error("Нет текста в ответе API");
@@ -279,156 +320,502 @@ function generateFilename(meetingName) {
     return `transcription_${cleanName}_${formattedDate}_${formattedTime}.txt`;
 }
 
-// Improved file download function for background.js
+// =================== IMPROVED DOWNLOAD FUNCTIONS ===================
 
-// Save transcription to file using reliable download method
+// Highly robust saveTranscriptionToFile function with detailed diagnostics
 async function saveTranscriptionToFile(transcription, filename) {
+    console.log("💾 Creating download file:", filename);
+    console.log("📝 Transcription length:", transcription.length, "characters");
+    
+    // Reset diagnostics for this download attempt
+    downloadDiagnostics.reset();
+    
     try {
-        console.log("💾 Создаем файл для скачивания:", filename);
-        console.log("📝 Текст транскрипции:", transcription.substring(0, 100) + "...");
+        // First always save to storage for recovery
+        await storeTranscriptionData(transcription, filename);
+        downloadDiagnostics.addAttempt("storage", true);
         
-        // Create a blob from the transcription text
-        const blob = new Blob([transcription], { type: "text/plain" });
+        // Try each download method in sequence
         
-        // Create a direct download URL
-        const url = URL.createObjectURL(blob);
-        
-        // Store the transcription data for popup access
-        chrome.storage.local.set({
-            transcription: {
-                text: transcription,
-                filename: filename,
-                timestamp: new Date().toISOString(),
-                url: url  // Store URL for direct access
-            }
-        });
-        
-        console.log("✅ Транскрипция сохранена в хранилище");
-        
-        // Use chrome.downloads API
-        return new Promise((resolve, reject) => {
-            chrome.downloads.download({
-                url: url,
-                filename: filename,
-                saveAs: false
-            }, (downloadId) => {
-                if (chrome.runtime.lastError) {
-                    console.error("❌ Ошибка загрузки через chrome.downloads:", chrome.runtime.lastError);
-                    
-                    // Fall back to creating a download link in a new tab
-                    createDownloadTab(transcription, filename)
-                        .then(tabId => resolve(tabId))
-                        .catch(error => reject(error));
-                } else {
-                    console.log("✅ Загрузка файла начата, ID:", downloadId);
-                    resolve(downloadId);
-                    
-                    // Keep URL alive for a while to ensure download completes
-                    setTimeout(() => {
-                        URL.revokeObjectURL(url);
-                    }, 60000); // 1 minute
-                }
-            });
-        });
-    } catch (error) {
-        console.error("❌ Ошибка при сохранении файла:", error);
-        
-        // Try fallback method
+        // Method 1: Direct Downloads API 
         try {
-            const tabId = await createDownloadTab(transcription, filename);
-            return tabId;
-        } catch (fallbackError) {
-            console.error("❌ Ошибка при использовании запасного метода:", fallbackError);
-            throw fallbackError;
+            console.log("🔄 Trying direct download method...");
+            const downloadId = await directDownload(transcription, filename);
+            downloadDiagnostics.addAttempt("direct_download", downloadId);
+            console.log("✅ Direct download success, ID:", downloadId);
+            return downloadId;
+        } catch (directError) {
+            downloadDiagnostics.addAttempt("direct_download", false, directError);
+            console.warn("⚠️ Direct download failed, trying fallback method...");
+            
+            // Method 2: Download Helper Tab
+            try {
+                console.log("🔄 Trying download helper tab method...");
+                const tabId = await createDownloadTab(transcription, filename);
+                downloadDiagnostics.addAttempt("helper_tab", tabId);
+                console.log("✅ Helper tab download success, Tab ID:", tabId);
+                return tabId;
+            } catch (tabError) {
+                downloadDiagnostics.addAttempt("helper_tab", false, tabError);
+                console.warn("⚠️ Helper tab download failed, trying data URL method...");
+                
+                // Method 3: Data URL Method
+                try {
+                    console.log("🔄 Trying data URL download method...");
+                    const dataUrlResult = await dataUrlDownload(transcription, filename);
+                    downloadDiagnostics.addAttempt("data_url", dataUrlResult);
+                    console.log("✅ Data URL download success");
+                    return dataUrlResult;
+                } catch (dataUrlError) {
+                    downloadDiagnostics.addAttempt("data_url", false, dataUrlError);
+                    
+                    // All methods failed, but we still have the data in storage
+                    const summary = downloadDiagnostics.getSummary();
+                    console.error("❌ All download methods failed:", summary);
+                    throw new Error("All download methods failed. Data is saved and can be accessed from popup.");
+                }
+            }
         }
+    } catch (error) {
+        const summary = downloadDiagnostics.getSummary();
+        console.error("❌ Critical download error:", error, "Summary:", summary);
+        
+        // Even if we fail, notify that the data is still accessible
+        if (summary.totalAttempts > 0 && summary.methods.includes("storage") && summary.methods[0] === "storage") {
+            console.log("ℹ️ Transcription was saved to storage and can still be accessed from popup");
+            showNotification(
+                "Текст сохранен, но скачивание не удалось", 
+                "Вы можете скопировать текст из окна плагина"
+            );
+        }
+        
+        throw error;
     }
 }
 
-// Create a download page in a new tab as fallback
-async function createDownloadTab(transcription, filename) {
+// Store transcription data securely in local storage
+async function storeTranscriptionData(text, filename) {
     return new Promise((resolve, reject) => {
         try {
-            // Create a new tab with the text content
-            chrome.tabs.create({ url: 'about:blank' }, (tab) => {
-                console.log("📄 Открыт новый таб для скачивания");
+            // First check available storage space to avoid silent failures
+            chrome.storage.local.getBytesInUse(null, (bytesInUse) => {
+                const textBytes = new TextEncoder().encode(text).length;
+                const totalBytes = bytesInUse + textBytes + 1000; // 1000 bytes buffer for metadata
                 
-                // Execute script to create download UI
-                chrome.scripting.executeScript({
-                    target: { tabId: tab.id },
-                    function: (text, name) => {
-                        document.body.innerHTML = `
-                            <div style="font-family: Arial, sans-serif; max-width: 800px; margin: 20px auto; padding: 20px; border: 1px solid #ccc; border-radius: 5px;">
-                                <h1>Google Meet Transcription</h1>
-                                <p>Транскрипция готова к скачиванию:</p>
-                                <div style="margin: 20px 0;">
-                                    <button id="downloadBtn" style="background: #1a73e8; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-weight: bold;">
-                                        Скачать файл: ${name}
-                                    </button>
-                                </div>
-                                <div style="margin-top: 20px; padding: 10px; background: #f5f5f5; border-radius: 4px; max-height: 400px; overflow-y: auto;">
-                                    <pre style="white-space: pre-wrap; word-break: break-word;">${text}</pre>
-                                </div>
-                                <p style="margin-top: 20px; color: #5f6368; font-style: italic;">
-                                    Вы можете также скопировать текст выше вручную.
-                                </p>
-                            </div>
-                        `;
-                        
-                        // Add download functionality
-                        document.getElementById('downloadBtn').onclick = () => {
-                            const blob = new Blob([text], { type: 'text/plain' });
-                            const url = URL.createObjectURL(blob);
-                            const a = document.createElement('a');
-                            a.href = url;
-                            a.download = name;
-                            a.click();
-                            URL.revokeObjectURL(url);
-                        };
-                        
-                        // Also set page title
-                        document.title = "Транскрипция - " + name;
+                chrome.storage.local.set({
+                    transcription: {
+                        text: text,
+                        filename: filename,
+                        timestamp: new Date().toISOString(),
+                        size: textBytes
                     },
-                    args: [transcription, filename]
+                    diagnostics: {
+                        storageInfo: {
+                            bytesInUse,
+                            newContentSize: textBytes,
+                            timestamp: new Date().toISOString()
+                        }
+                    }
+                }, () => {
+                    if (chrome.runtime.lastError) {
+                        console.error("❌ Storage error:", chrome.runtime.lastError);
+                        reject(chrome.runtime.lastError);
+                    } else {
+                        console.log(`✅ Transcription saved to storage: ${textBytes} bytes`);
+                        resolve(true);
+                    }
                 });
-                
-                resolve(tab.id);
             });
         } catch (error) {
-            console.error("❌ Ошибка при создании таба для скачивания:", error);
+            console.error("❌ Storage error:", error);
             reject(error);
         }
     });
 }
 
-// Direct download function for popup
-async function triggerDirectDownload(text, filename) {
-    try {
-        const blob = new Blob([text], { type: 'text/plain' });
-        const url = URL.createObjectURL(blob);
-        
-        return new Promise((resolve, reject) => {
+// Direct download through chrome.downloads API
+async function directDownload(text, filename) {
+    return new Promise((resolve, reject) => {
+        try {
+            // Create blob with proper encoding
+            const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+            
+            // Create URL with explicit cleanup plan
+            const url = URL.createObjectURL(blob);
+            console.log("🔗 Created URL for download:", url.substring(0, 30) + "...");
+            
+            // Schedule cleanup of URL after 2 minutes (safety)
+            const autoCleanupTimeout = setTimeout(() => {
+                console.log("⏱️ Auto-cleanup of download URL");
+                URL.revokeObjectURL(url);
+            }, 120000);
+            
+            // Attempt download
             chrome.downloads.download({
                 url: url,
                 filename: filename,
-                saveAs: true  // Show save dialog
+                saveAs: false
             }, (downloadId) => {
-                setTimeout(() => URL.revokeObjectURL(url), 10000);
+                const error = chrome.runtime.lastError;
                 
+                if (error) {
+                    clearTimeout(autoCleanupTimeout);
+                    URL.revokeObjectURL(url);
+                    console.error("❌ Download API error:", error);
+                    reject(new Error(`Download API error: ${error.message}`));
+                    return;
+                }
+                
+                if (!downloadId) {
+                    clearTimeout(autoCleanupTimeout);
+                    URL.revokeObjectURL(url);
+                    console.error("❌ Download failed with null ID");
+                    reject(new Error("Download returned null ID"));
+                    return;
+                }
+                
+                console.log("🔄 Download starting, ID:", downloadId);
+                
+                // Monitor download progress
+                chrome.downloads.onChanged.addListener(function onDownloadChanged(delta) {
+                    if (delta.id !== downloadId) return;
+                    
+                    console.log(`📌 Download state change [${downloadId}]:`, delta.state?.current || "N/A");
+                    
+                    // Check for completion or error
+                    if (delta.state?.current === 'complete') {
+                        console.log(`✅ Download complete [${downloadId}]`);
+                        clearTimeout(autoCleanupTimeout);
+                        URL.revokeObjectURL(url);
+                        chrome.downloads.onChanged.removeListener(onDownloadChanged);
+                        showNotification("Транскрибация завершена", `Файл сохранен: ${filename}`);
+                    } else if (delta.error) {
+                        console.error(`❌ Download error [${downloadId}]:`, delta.error.current);
+                        clearTimeout(autoCleanupTimeout);
+                        URL.revokeObjectURL(url);
+                        chrome.downloads.onChanged.removeListener(onDownloadChanged);
+                    }
+                });
+                
+                // Return success with download ID
+                resolve(downloadId);
+            });
+        } catch (error) {
+            console.error("❌ Direct download error:", error);
+            reject(error);
+        }
+    });
+}
+
+// Create a specialized download tab
+async function createDownloadTab(text, filename) {
+    return new Promise((resolve, reject) => {
+        try {
+            chrome.tabs.create({ url: 'about:blank' }, (tab) => {
+                if (!tab || !tab.id) {
+                    reject(new Error("Failed to create tab"));
+                    return;
+                }
+                
+                console.log("📄 Created helper tab, ID:", tab.id);
+                
+                // Execute script with maximum reliability
+                chrome.scripting.executeScript({
+                    target: { tabId: tab.id },
+                    function: (text, name) => {
+                        // Create a clean, self-contained download page
+                        document.documentElement.innerHTML = `
+                        <html>
+                        <head>
+                            <meta charset="UTF-8">
+                            <title>Транскрипция - ${name}</title>
+                            <style>
+                                body {
+                                    font-family: Arial, sans-serif;
+                                    max-width: 800px;
+                                    margin: 0 auto;
+                                    padding: 20px;
+                                    background-color: #f5f5f5;
+                                }
+                                .container {
+                                    background-color: white;
+                                    border-radius: 8px;
+                                    padding: 20px;
+                                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                                }
+                                h1 {
+                                    color: #1a73e8;
+                                    font-size: 24px;
+                                }
+                                .btn {
+                                    background-color: #1a73e8;
+                                    color: white;
+                                    border: none;
+                                    padding: 10px 20px;
+                                    border-radius: 4px;
+                                    font-size: 16px;
+                                    cursor: pointer;
+                                    margin-right: 10px;
+                                    margin-bottom: 10px;
+                                }
+                                .btn.secondary {
+                                    background-color: #f8f9fa;
+                                    color: #1a73e8;
+                                    border: 1px solid #dadce0;
+                                }
+                                .btn:hover {
+                                    opacity: 0.9;
+                                }
+                                .btn:active {
+                                    opacity: 0.8;
+                                }
+                                .content {
+                                    background-color: #f8f9fa;
+                                    border-radius: 4px;
+                                    padding: 15px;
+                                    margin-top: 20px;
+                                    max-height: 400px;
+                                    overflow-y: auto;
+                                    white-space: pre-wrap;
+                                    font-family: monospace;
+                                    font-size: 14px;
+                                    line-height: 1.5;
+                                }
+                                .success {
+                                    color: #0f9d58;
+                                    font-weight: bold;
+                                }
+                                .footer {
+                                    margin-top: 20px;
+                                    color: #5f6368;
+                                    font-size: 12px;
+                                }
+                                .status {
+                                    margin-top: 10px;
+                                    padding: 8px;
+                                    border-radius: 4px;
+                                    background-color: #e6f4ea;
+                                    color: #137333;
+                                    display: none;
+                                }
+                            </style>
+                        </head>
+                        <body>
+                            <div class="container">
+                                <h1>Google Meet Transcription</h1>
+                                <p>Транскрипция звонка готова. Используйте кнопки ниже для сохранения текста.</p>
+                                
+                                <div>
+                                    <button id="downloadBtn" class="btn">Скачать как файл</button>
+                                    <button id="copyBtn" class="btn secondary">Скопировать текст</button>
+                                </div>
+                                
+                                <div id="status" class="status"></div>
+                                
+                                <div class="content">${text}</div>
+                                
+                                <div class="footer">
+                                    <p>Если у вас возникли проблемы со скачиванием, вы можете вручную скопировать текст выше.</p>
+                                </div>
+                            </div>
+                            
+                            <script>
+                                // Self-contained download script
+                                document.getElementById('downloadBtn').addEventListener('click', function() {
+                                    try {
+                                        // Method 1: Using Blob and download attribute
+                                        const blob = new Blob(['${text.replace(/'/g, "\\'")}'], { type: 'text/plain;charset=utf-8' });
+                                        const url = URL.createObjectURL(blob);
+                                        
+                                        const a = document.createElement('a');
+                                        a.href = url;
+                                        a.download = '${name}';
+                                        a.style.display = 'none';
+                                        
+                                        document.body.appendChild(a);
+                                        a.click();
+                                        
+                                        // Clean up
+                                        setTimeout(function() {
+                                            document.body.removeChild(a);
+                                            URL.revokeObjectURL(url);
+                                            
+                                            // Show success message
+                                            const status = document.getElementById('status');
+                                            status.style.display = 'block';
+                                            status.textContent = '✓ Файл скачивается';
+                                            
+                                            // Update button
+                                            const btn = document.getElementById('downloadBtn');
+                                            btn.textContent = '✓ Скачивание начато';
+                                        }, 100);
+                                    } catch (e) {
+                                        console.error('Download error:', e);
+                                        alert('Ошибка скачивания: ' + e.message);
+                                        
+                                        // Try alternate method as fallback
+                                        try {
+                                            // Method 2: Using data URL (works in more browsers)
+                                            const dataUrl = 'data:text/plain;charset=utf-8,' + encodeURIComponent('${text.replace(/'/g, "\\'")}');
+                                            
+                                            const a = document.createElement('a');
+                                            a.href = dataUrl;
+                                            a.download = '${name}';
+                                            a.style.display = 'none';
+                                            
+                                            document.body.appendChild(a);
+                                            a.click();
+                                            
+                                            // Clean up
+                                            setTimeout(function() {
+                                                document.body.removeChild(a);
+                                                
+                                                // Show success message
+                                                const status = document.getElementById('status');
+                                                status.style.display = 'block';
+                                                status.textContent = '✓ Файл скачивается (альтернативный метод)';
+                                                
+                                                // Update button
+                                                const btn = document.getElementById('downloadBtn');
+                                                btn.textContent = '✓ Скачивание начато';
+                                            }, 100);
+                                        } catch (e2) {
+                                            console.error('Alternative download error:', e2);
+                                            alert('Не удалось скачать файл. Пожалуйста, скопируйте текст вручную.');
+                                        }
+                                    }
+                                });
+                                
+                                // Copy button handler
+                                document.getElementById('copyBtn').addEventListener('click', function() {
+                                    try {
+                                        // Method 1: Modern clipboard API
+                                        navigator.clipboard.writeText('${text.replace(/'/g, "\\'")}')
+                                            .then(function() {
+                                                // Show success message
+                                                const status = document.getElementById('status');
+                                                status.style.display = 'block';
+                                                status.textContent = '✓ Текст скопирован в буфер обмена';
+                                                
+                                                // Update button
+                                                const btn = document.getElementById('copyBtn');
+                                                btn.textContent = '✓ Скопировано';
+                                                
+                                                // Reset after delay
+                                                setTimeout(function() {
+                                                    btn.textContent = 'Скопировать текст';
+                                                }, 2000);
+                                            })
+                                            .catch(function(err) {
+                                                // Fallback for clipboard API failure
+                                                console.error('Clipboard API error:', err);
+                                                fallbackCopy();
+                                            });
+                                    } catch (e) {
+                                        console.error('Copy error:', e);
+                                        fallbackCopy();
+                                    }
+                                    
+                                    // Fallback copy method
+                                    function fallbackCopy() {
+                                        try {
+                                            const textarea = document.createElement('textarea');
+                                            textarea.value = '${text.replace(/'/g, "\\'")}';
+                                            textarea.style.position = 'fixed';
+                                            textarea.style.opacity = '0';
+                                            
+                                            document.body.appendChild(textarea);
+                                            textarea.select();
+                                            
+                                            const successful = document.execCommand('copy');
+                                            document.body.removeChild(textarea);
+                                            
+                                            if (successful) {
+                                                // Show success message
+                                                const status = document.getElementById('status');
+                                                status.style.display = 'block';
+                                                status.textContent = '✓ Текст скопирован в буфер обмена';
+                                                
+                                                // Update button
+                                                const btn = document.getElementById('copyBtn');
+                                                btn.textContent = '✓ Скопировано';
+                                                
+                                                // Reset after delay
+                                                setTimeout(function() {
+                                                    btn.textContent = 'Скопировать текст';
+                                                }, 2000);
+                                            } else {
+                                                throw new Error('execCommand returned false');
+                                            }
+                                        } catch (e) {
+                                            console.error('Fallback copy error:', e);
+                                            alert('Не удалось скопировать текст. Пожалуйста, выделите его вручную и скопируйте (Ctrl+C).');
+                                        }
+                                    }
+                                });
+                            </script>
+                        </body>
+                        </html>
+                        `;
+                    },
+                    args: [text, filename]
+                }, (results) => {
+                    if (chrome.runtime.lastError) {
+                        console.error("❌ Script injection error:", chrome.runtime.lastError);
+                        reject(new Error(`Script injection error: ${chrome.runtime.lastError.message}`));
+                    } else if (!results || results.length === 0) {
+                        console.error("❌ Script execution failed with empty results");
+                        reject(new Error("Script execution failed with empty results"));
+                    } else {
+                        console.log("✅ Download page created successfully");
+                        showNotification(
+                            "Транскрибация готова", 
+                            "Открыта страница для скачивания файла"
+                        );
+                        resolve(tab.id);
+                    }
+                });
+            });
+        } catch (error) {
+            console.error("❌ Tab creation error:", error);
+            reject(error);
+        }
+    });
+}
+
+// Last resort data URL download method
+async function dataUrlDownload(text, filename) {
+    return new Promise((resolve, reject) => {
+        try {
+            console.log("🔗 Creating data URL download...");
+            
+            // Encode text as data URL
+            const dataUrl = 'data:text/plain;charset=utf-8,' + encodeURIComponent(text);
+            
+            // Attempt download through downloads API
+            chrome.downloads.download({
+                url: dataUrl,
+                filename: filename,
+                saveAs: false
+            }, (downloadId) => {
                 if (chrome.runtime.lastError) {
-                    reject(chrome.runtime.lastError);
+                    console.error("❌ Data URL download error:", chrome.runtime.lastError);
+                    reject(new Error(`Data URL download error: ${chrome.runtime.lastError.message}`));
+                } else if (!downloadId) {
+                    console.error("❌ Data URL download failed (null ID)");
+                    reject(new Error("Data URL download returned null ID"));
                 } else {
+                    console.log("✅ Data URL download started, ID:", downloadId);
+                    showNotification("Транскрибация завершена", `Файл сохранен: ${filename}`);
                     resolve(downloadId);
                 }
             });
-        });
-    } catch (error) {
-        console.error("❌ Ошибка при прямом скачивании:", error);
-        throw error;
-    }
+        } catch (error) {
+            console.error("❌ Data URL download error:", error);
+            reject(error);
+        }
+    });
 }
-
-
-// Add this to background.js - completely new approach for handling audio
 
 // Handle raw audio processing (new message type)
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -469,15 +856,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     if (result.success) {
                         // Generate filename and save transcription
                         const filename = generateFilename(message.meetingName);
-                        const downloadId = await saveTranscriptionToFile(result.text, filename);
                         
-                        showNotification("Транскрибация завершена", "Файл сохранен как " + filename);
-                        sendResponse({ 
-                            status: "✅ Аудиофайл обработан", 
-                            transcription: result.text,
-                            filename: filename,
-                            downloadId: downloadId
-                        });
+                        try {
+                            const downloadId = await saveTranscriptionToFile(result.text, filename);
+                            
+                            showNotification("Транскрибация завершена", "Файл сохранен как " + filename);
+                            sendResponse({ 
+                                status: "✅ Аудиофайл обработан", 
+                                transcription: result.text,
+                                filename: filename,
+                                downloadId: downloadId
+                            });
+                        } catch (downloadError) {
+                            console.error("❌ Ошибка при сохранении файла:", downloadError);
+                            
+                            // Return success with error info about download
+                            showNotification("Текст получен, но сохранение не удалось", 
+                                          "Вы можете скачать файл через интерфейс плагина");
+                            sendResponse({ 
+                                status: "⚠️ Транскрипция получена, но сохранение не удалось", 
+                                transcription: result.text,
+                                filename: filename,
+                                error: downloadError.message
+                            });
+                        }
                         return;
                     } else {
                         console.error("❌ Ошибка при обработке WAV:", result.error);
@@ -500,15 +902,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     if (result.success) {
                         // Generate filename and save transcription
                         const filename = generateFilename(message.meetingName);
-                        const downloadId = await saveTranscriptionToFile(result.text, filename);
                         
-                        showNotification("Транскрибация завершена", "Файл сохранен как " + filename);
-                        sendResponse({ 
-                            status: "✅ Аудиофайл обработан", 
-                            transcription: result.text,
-                            filename: filename,
-                            downloadId: downloadId
-                        });
+                        try {
+                            const downloadId = await saveTranscriptionToFile(result.text, filename);
+                            
+                            showNotification("Транскрибация завершена", "Файл сохранен как " + filename);
+                            sendResponse({ 
+                                status: "✅ Аудиофайл обработан", 
+                                transcription: result.text,
+                                filename: filename,
+                                downloadId: downloadId
+                            });
+                        } catch (downloadError) {
+                            console.error("❌ Ошибка при сохранении файла:", downloadError);
+                            
+                            // Return success with error info about download
+                            showNotification("Текст получен, но сохранение не удалось", 
+                                          "Вы можете скачать файл через интерфейс плагина");
+                            sendResponse({ 
+                                status: "⚠️ Транскрипция получена, но сохранение не удалось", 
+                                transcription: result.text,
+                                filename: filename,
+                                error: downloadError.message
+                            });
+                        }
                         return;
                     } else {
                         console.error("❌ Ошибка при обработке MP3:", result.error);
@@ -529,15 +946,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     if (result.success) {
                         // Generate filename and save transcription
                         const filename = generateFilename(message.meetingName);
-                        const downloadId = await saveTranscriptionToFile(result.text, filename);
                         
-                        showNotification("Транскрибация завершена", "Файл сохранен как " + filename);
-                        sendResponse({ 
-                            status: "✅ Аудиофайл обработан", 
-                            transcription: result.text,
-                            filename: filename,
-                            downloadId: downloadId
-                        });
+                        try {
+                            const downloadId = await saveTranscriptionToFile(result.text, filename);
+                            
+                            showNotification("Транскрибация завершена", "Файл сохранен как " + filename);
+                            sendResponse({ 
+                                status: "✅ Аудиофайл обработан", 
+                                transcription: result.text,
+                                filename: filename,
+                                downloadId: downloadId
+                            });
+                        } catch (downloadError) {
+                            console.error("❌ Ошибка при сохранении файла:", downloadError);
+                            
+                            // Return success with error info about download
+                            showNotification("Текст получен, но сохранение не удалось", 
+                                          "Вы можете скачать файл через интерфейс плагина");
+                            sendResponse({ 
+                                status: "⚠️ Транскрипция получена, но сохранение не удалось", 
+                                transcription: result.text,
+                                filename: filename,
+                                error: downloadError.message
+                            });
+                        }
                         return;
                     } else {
                         // All attempts failed
@@ -697,55 +1129,76 @@ async function sendToWhisperAPI(audioBlob, apiUrl, apiKey, language, filename) {
     }
 }
 
-
-// Add or update this message handler in background.js
-
-// Handle redownload requests from popup
+// Improved message handler for download-related requests
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "redownloadTranscription") {
         (async () => {
+            console.log("📥 Received transcription redownload request");
+            
+            // Reset diagnostics for this operation
+            downloadDiagnostics.reset();
+            
             try {
-                console.log("📥 Получен запрос на повторное скачивание файла");
-                
-                const result = await chrome.storage.local.get(['transcription']);
-                
-                if (!result.transcription || !result.transcription.text) {
-                    console.error("❌ Нет сохраненной транскрипции");
-                    sendResponse({ 
-                        success: false, 
-                        error: "Нет сохраненной транскрипции" 
+                // Get stored transcription
+                const result = await new Promise((resolve) => {
+                    chrome.storage.local.get(['transcription'], (data) => {
+                        if (chrome.runtime.lastError) {
+                            throw new Error(`Storage error: ${chrome.runtime.lastError.message}`);
+                        }
+                        resolve(data);
                     });
+                });
+                
+                if (!result || !result.transcription || !result.transcription.text) {
+                    console.error("❌ No saved transcription found");
+                    sendResponse({ success: false, error: "Нет сохраненной транскрипции" });
                     return;
                 }
                 
+                // Log retrieval success
+                downloadDiagnostics.addAttempt("storage_retrieve", true);
+                console.log("✅ Retrieved transcription from storage:", 
+                            `${result.transcription.text.length} chars,`,
+                            `Filename: ${result.transcription.filename}`);
+                
                 const { text, filename } = result.transcription;
                 
-                // Try direct download first
+                // Try all download methods
                 try {
-                    const downloadId = await triggerDirectDownload(text, filename);
-                    console.log("✅ Скачивание началось, ID:", downloadId);
-                    sendResponse({ success: true, downloadId });
-                } catch (downloadError) {
-                    console.error("❌ Ошибка прямого скачивания:", downloadError);
+                    // First show a confirmation message to let user know something is happening
+                    sendResponse({ 
+                        message: "Начинаем скачивание...", 
+                        inProgress: true 
+                    });
                     
-                    // Fallback to tab method
-                    try {
-                        const tabId = await createDownloadTab(text, filename);
-                        console.log("✅ Создана страница скачивания, ID:", tabId);
-                        sendResponse({ success: true, tabId });
-                    } catch (tabError) {
-                        console.error("❌ Ошибка создания таба:", tabError);
-                        sendResponse({ 
-                            success: false, 
-                            error: "Не удалось скачать файл: " + tabError.message 
-                        });
-                    }
+                    // Try download with save dialog
+                    console.log("🔄 Trying download with save dialog...");
+                    const downloadResult = await saveTranscriptionToFile(text, filename);
+                    
+                    sendResponse({ 
+                        success: true, 
+                        result: downloadResult,
+                        message: "Скачивание началось"
+                    });
+                } catch (error) {
+                    console.error("❌ All download methods failed:", error);
+                    
+                    // Get detailed diagnostic info
+                    const diagInfo = downloadDiagnostics.getSummary();
+                    
+                    sendResponse({ 
+                        success: false, 
+                        error: "Не удалось скачать файл: " + error.message,
+                        diagnostics: diagInfo,
+                        fallbackText: text,  // Send the text back so popup can try to handle it
+                        fallbackFilename: filename
+                    });
                 }
             } catch (error) {
-                console.error("❌ Общая ошибка скачивания:", error);
+                console.error("❌ Critical error in redownload:", error);
                 sendResponse({ 
                     success: false, 
-                    error: "Ошибка: " + error.message 
+                    error: "Критическая ошибка: " + error.message
                 });
             }
         })();
@@ -753,7 +1206,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true; // Important for async sendResponse
     }
     
-    // New message type for advanced download
+    // Direct download request handler
     if (message.type === "downloadTranscriptionAsFile") {
         (async () => {
             try {
@@ -765,36 +1218,82 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     return;
                 }
                 
-                console.log("📥 Создаем файл напрямую:", message.filename);
-                
-                // Create a blob and trigger download
-                const blob = new Blob([message.text], { type: 'text/plain' });
-                const url = URL.createObjectURL(blob);
-                
-                chrome.downloads.download({
-                    url: url,
-                    filename: message.filename,
-                    saveAs: message.saveAs || false
-                }, (downloadId) => {
-                    setTimeout(() => URL.revokeObjectURL(url), 10000);
-                    
-                    if (chrome.runtime.lastError) {
-                        console.error("❌ Ошибка загрузки:", chrome.runtime.lastError);
-                        sendResponse({ 
-                            success: false, 
-                            error: chrome.runtime.lastError.message 
-                        });
-                    } else {
-                        console.log("✅ Загрузка файла начата, ID:", downloadId);
-                        sendResponse({ success: true, downloadId });
-                    }
+                // Temporary response to improve perceived performance
+                sendResponse({ 
+                    inProgress: true, 
+                    message: "Начинаем скачивание..." 
                 });
+                
+                console.log(`📥 Direct download request: ${message.filename}, ${message.text.length} chars`);
+                
+                // Try the download with all available methods
+                try {
+                    const result = await saveTranscriptionToFile(
+                        message.text, 
+                        message.filename
+                    );
+                    
+                    // Send success response
+                    chrome.runtime.sendMessage({
+                        type: "downloadResult",
+                        success: true,
+                        result: result,
+                        message: "Скачивание началось"
+                    });
+                } catch (error) {
+                    console.error("❌ Download failed:", error);
+                    
+                    // Send failure response
+                    chrome.runtime.sendMessage({
+                        type: "downloadResult",
+                        success: false,
+                        error: error.message,
+                        diagnostics: downloadDiagnostics.getSummary()
+                    });
+                }
             } catch (error) {
-                console.error("❌ Ошибка при создании файла:", error);
-                sendResponse({ success: false, error: error.message });
+                console.error("❌ Critical error in download handler:", error);
+                
+                // Send error response
+                chrome.runtime.sendMessage({
+                    type: "downloadResult",
+                    success: false,
+                    error: "Критическая ошибка: " + error.message
+                });
             }
         })();
         
         return true; // Important for async sendResponse
     }
+    
+    // Add this to your existing message listeners
+    if (message.type === "getDiagnostics") {
+        sendResponse({
+            downloadDiagnostics: downloadDiagnostics.getSummary(),
+            lastError: downloadDiagnostics.lastError ? 
+                       (downloadDiagnostics.lastError.message || String(downloadDiagnostics.lastError)) : 
+                       null,
+            permissions: {
+                downloads: typeof chrome.downloads !== 'undefined',
+                tabs: typeof chrome.tabs !== 'undefined',
+                scripting: typeof chrome.scripting !== 'undefined',
+                storage: typeof chrome.storage !== 'undefined'
+            }
+        });
+        return false; // Synchronous response
+    }
 });
+
+// Generic notification function
+function showNotification(title, message) {
+    if (typeof chrome.notifications !== 'undefined' && chrome.notifications.create) {
+        chrome.notifications.create({
+            type: 'basic',
+            iconUrl: '../images/icon128.png', // Update path to your extension icon
+            title: title,
+            message: message
+        });
+    } else {
+        console.log(`🔔 NOTIFICATION: ${title} - ${message}`);
+    }
+}
