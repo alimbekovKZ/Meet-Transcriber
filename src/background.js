@@ -21,11 +21,12 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 // Listen for messages from content script
+// Handle audio processing in background.js
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "sendAudioToWhisper") {
         (async () => {
             try {
-                console.log("📩 Получен аудиофайл, конвертируем...");
+                console.log("📩 Получен аудиофайл, обрабатываем...");
                 showNotification("Транскрибация", "Начинаем обработку аудиозаписи...");
 
                 // Get API key and settings from storage
@@ -44,21 +45,45 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 }
 
                 // Decode Base64 audio data
-                const byteCharacters = atob(message.file.split(',')[1]);
-                const byteNumbers = new Array(byteCharacters.length);
-                for (let i = 0; i < byteCharacters.length; i++) {
-                    byteNumbers[i] = byteCharacters.charCodeAt(i);
+                let audioData;
+                try {
+                    // Split the base64 string to get only the data part
+                    const base64Data = message.file.split(',')[1];
+                    if (!base64Data) {
+                        throw new Error("Некорректные данные аудиофайла");
+                    }
+                    
+                    // Decode Base64 to binary
+                    const byteCharacters = atob(base64Data);
+                    const byteNumbers = new Array(byteCharacters.length);
+                    
+                    for (let i = 0; i < byteCharacters.length; i++) {
+                        byteNumbers[i] = byteCharacters.charCodeAt(i);
+                    }
+                    
+                    audioData = new Uint8Array(byteNumbers);
+                    console.log("🔄 Аудиоданные успешно декодированы, размер:", audioData.length, "байт");
+                } catch (error) {
+                    console.error("❌ Ошибка декодирования аудиоданных:", error);
+                    showNotification("Ошибка", "Не удалось декодировать аудиофайл");
+                    sendResponse({ status: "❌ Ошибка декодирования", error: error.message });
+                    return;
                 }
-                const byteArray = new Uint8Array(byteNumbers);
-                const audioBlob = new Blob([byteArray], { type: "audio/wav" });
 
-                console.log("🔄 Файл успешно декодирован!");
+                // Create audio blob with proper MIME type
+                const audioBlob = new Blob([audioData], { 
+                    type: message.format || "audio/wav" 
+                });
+                
+                console.log("🔊 Аудиофайл создан:", audioBlob.size, "байт, тип:", audioBlob.type);
 
                 // Create form data for API request
                 const formData = new FormData();
                 formData.append("file", audioBlob, "recording.wav");
                 formData.append("model", WHISPER_MODEL);
                 formData.append("language", language);
+                // Add response format to get full text
+                formData.append("response_format", "json");
 
                 // Determine the authentication method based on key format
                 const isProjectKey = apiKey.startsWith("sk-proj-");
@@ -78,35 +103,75 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 console.log(`🔑 Используется тип ключа: ${isProjectKey ? "Проектный ключ" : "Стандартный ключ"}`);
                 showNotification("Транскрибация", "Отправляем аудио на сервер...");
 
-                // Send request to API
-                const response = await fetch(apiUrl, {
-                    method: "POST",
-                    headers: authHeader,
-                    body: formData,
-                });
-
-                const result = await response.json();
-
-                if (response.ok) {
-                    console.log("📥 Ответ от Whisper получен успешно");
+                // Send request to API with timeout
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 60000); // 60-second timeout
+                
+                try {
+                    const response = await fetch(apiUrl, {
+                        method: "POST",
+                        headers: authHeader,
+                        body: formData,
+                        signal: controller.signal
+                    });
                     
-                    // Generate filename based on meeting name and date
-                    const filename = generateFilename(message.meetingName);
+                    clearTimeout(timeoutId);
                     
-                    // Save transcription to file
-                    saveTranscriptionToFile(result.text, filename);
+                    // Check for errors first
+                    if (!response.ok) {
+                        // Try to get error details from response
+                        const errorData = await response.json().catch(() => ({}));
+                        console.error("⚠ Ошибка от сервера:", response.status, errorData);
+                        
+                        const errorMsg = errorData.error?.message || 
+                                        errorData.error || 
+                                        `HTTP ошибка: ${response.status}`;
+                        
+                        showNotification("Ошибка обработки", errorMsg);
+                        sendResponse({ 
+                            status: "❌ Ошибка API", 
+                            error: errorMsg,
+                            details: errorData
+                        });
+                        return;
+                    }
                     
-                    showNotification("Транскрибация завершена", "Файл сохранен как " + filename);
-                    sendResponse({ status: "✅ Аудиофайл обработан", transcription: result.text });
-                } else {
-                    console.error("⚠ Ошибка от OpenAI:", result);
-                    showNotification("Ошибка OpenAI", "Не удалось обработать аудиофайл");
-                    sendResponse({ status: "❌ Ошибка OpenAI", error: result });
+                    // Parse response
+                    const result = await response.json();
+                    
+                    if (result.text) {
+                        console.log("📥 Ответ от Whisper получен успешно");
+                        
+                        // Generate filename based on meeting name and date
+                        const filename = generateFilename(message.meetingName);
+                        
+                        // Save transcription to file
+                        saveTranscriptionToFile(result.text, filename);
+                        
+                        showNotification("Транскрибация завершена", "Файл сохранен как " + filename);
+                        sendResponse({ status: "✅ Аудиофайл обработан", transcription: result.text });
+                    } else {
+                        console.error("⚠ Некорректный ответ от API:", result);
+                        showNotification("Ошибка API", "Получен некорректный ответ от сервера");
+                        sendResponse({ status: "❌ Некорректный ответ", error: "Нет текста в ответе API" });
+                    }
+                } catch (fetchError) {
+                    clearTimeout(timeoutId);
+                    
+                    if (fetchError.name === 'AbortError') {
+                        console.error("⌛ Превышено время ожидания ответа от сервера");
+                        showNotification("Ошибка", "Превышено время ожидания ответа от сервера");
+                        sendResponse({ status: "❌ Timeout", error: "Превышено время ожидания" });
+                    } else {
+                        console.error("⚠ Ошибка запроса:", fetchError);
+                        showNotification("Ошибка", "Не удалось отправить аудио на сервер");
+                        sendResponse({ status: "❌ Ошибка отправки", error: fetchError.message });
+                    }
                 }
             } catch (error) {
-                console.error("⚠ Ошибка при отправке в Whisper:", error);
-                showNotification("Ошибка", "Не удалось отправить аудио на сервер");
-                sendResponse({ status: "❌ Ошибка отправки", error: error.message });
+                console.error("⚠ Критическая ошибка при обработке аудио:", error);
+                showNotification("Ошибка", "Произошла непредвиденная ошибка при обработке аудио");
+                sendResponse({ status: "❌ Критическая ошибка", error: error.message });
             }
         })();
 

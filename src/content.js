@@ -156,6 +156,7 @@ async function startRecording() {
 }
 
 // Stop recording and process audio
+// Improved audio recording and processing
 async function stopRecording() {
     console.log("🛑 Остановка записи...");
 
@@ -170,36 +171,58 @@ async function stopRecording() {
     // Create a promise to handle the stop event
     const stopPromise = new Promise((resolve) => {
         mediaRecorder.onstop = async () => {
-            // Convert audio chunks to blob
-            const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
-            console.log("💾 Аудио-файл сформирован:", audioBlob.size, "байт");
-            
-            // Convert to WAV for better compatibility with Whisper API
-            const wavBlob = await convertToWav(audioBlob);
-            
-            // Send to background script for processing
-            const reader = new FileReader();
-            reader.readAsDataURL(wavBlob); 
-            reader.onloadend = function() {
-                chrome.runtime.sendMessage({
-                    type: "sendAudioToWhisper",
-                    file: reader.result,
-                    meetingName: window.meetingName || "Unknown Meeting"
-                }, (response) => {
-                    if (chrome.runtime.lastError) {
-                        console.error("❌ Ошибка отправки сообщения:", chrome.runtime.lastError.message);
-                    } else {
-                        console.log("✅ Ответ от background.js:", response);
-                    }
+            try {
+                // Convert audio chunks to blob
+                const audioBlob = new Blob(audioChunks, { 
+                    type: mediaRecorder.mimeType || "audio/webm;codecs=opus" 
                 });
-            };
-            
-            // Release used media tracks
-            if (mediaRecorder.stream) {
-                mediaRecorder.stream.getTracks().forEach(track => track.stop());
+                console.log("💾 Аудио-файл сформирован:", audioBlob.size, "байт");
+                
+                // Try to convert to WAV first
+                let finalBlob;
+                try {
+                    finalBlob = await convertToWav(audioBlob);
+                    console.log("✅ Конвертация в WAV успешна");
+                } catch (error) {
+                    console.error("❌ Ошибка конвертации в WAV:", error);
+                    // Fallback to original format with different mime type
+                    finalBlob = new Blob([await audioBlob.arrayBuffer()], { type: 'audio/wav' });
+                    console.log("⚠️ Используем исходный формат с WAV mime-type");
+                }
+                
+                console.log("📦 Финальный аудиофайл:", finalBlob.size, "байт, тип:", finalBlob.type);
+                
+                // Send to background script for processing
+                const reader = new FileReader();
+                reader.readAsDataURL(finalBlob); 
+                reader.onloadend = function() {
+                    chrome.runtime.sendMessage({
+                        type: "sendAudioToWhisper",
+                        file: reader.result,
+                        meetingName: window.meetingName || "Unknown Meeting",
+                        format: finalBlob.type
+                    }, (response) => {
+                        if (chrome.runtime.lastError) {
+                            console.error("❌ Ошибка отправки сообщения:", chrome.runtime.lastError.message);
+                        } else {
+                            console.log("✅ Ответ от background.js:", response);
+                        }
+                    });
+                };
+            } catch (error) {
+                console.error("❌ Критическая ошибка при обработке аудио:", error);
+                chrome.runtime.sendMessage({
+                    type: "recordingError",
+                    error: error.message
+                });
+            } finally {
+                // Release used media tracks
+                if (mediaRecorder.stream) {
+                    mediaRecorder.stream.getTracks().forEach(track => track.stop());
+                }
+                
+                resolve();
             }
-            
-            resolve();
         };
     });
     
@@ -218,12 +241,123 @@ async function stopRecording() {
 }
 
 // Convert WebM to WAV (simplified approach)
+// Proper WebM to WAV conversion function
 async function convertToWav(webmBlob) {
-    // In a real implementation, we would use audio libraries to convert
-    // For this example, we'll just return the original blob
-    // In production, you'd want to use WebAudio API to properly convert
-    console.log("🔄 Конвертация аудио формата (упрощенная версия)");
-    return webmBlob;
+    console.log("🔄 Конвертация аудио из WebM в WAV формат...");
+    
+    try {
+        // Create audio context
+        const audioContext = new AudioContext();
+        
+        // Read the blob as ArrayBuffer
+        const arrayBuffer = await webmBlob.arrayBuffer();
+        
+        // Decode the audio data
+        const audioData = await audioContext.decodeAudioData(arrayBuffer);
+        
+        // Create a buffer source
+        const source = audioContext.createBufferSource();
+        source.buffer = audioData;
+        
+        // Create offline context for rendering
+        const offlineCtx = new OfflineAudioContext(
+            audioData.numberOfChannels,
+            audioData.length,
+            audioData.sampleRate
+        );
+        
+        // Create buffer source for offline context
+        const offlineSource = offlineCtx.createBufferSource();
+        offlineSource.buffer = audioData;
+        offlineSource.connect(offlineCtx.destination);
+        offlineSource.start();
+        
+        // Render audio
+        const renderedBuffer = await offlineCtx.startRendering();
+        
+        // Convert to WAV format
+        const wavBlob = audioBufferToWav(renderedBuffer);
+        
+        console.log("✅ Аудио успешно конвертировано в WAV формат");
+        return wavBlob;
+    } catch (error) {
+        console.error("❌ Ошибка при конвертации аудио:", error);
+        
+        // Fallback: Try to send original blob with proper MIME type
+        console.log("⚠️ Используем оригинальный аудиофайл с измененным MIME типом");
+        return new Blob([await webmBlob.arrayBuffer()], { type: 'audio/wav' });
+    }
+}
+
+// Function to convert AudioBuffer to WAV Blob
+function audioBufferToWav(buffer) {
+    const numOfChan = buffer.numberOfChannels;
+    const length = buffer.length * numOfChan * 2;
+    const sampleRate = buffer.sampleRate;
+    
+    // Create DataView for WAV header
+    const wavDataView = new DataView(new ArrayBuffer(44));
+    
+    // Write "RIFF" identifier
+    writeString(wavDataView, 0, 'RIFF');
+    // Write RIFF chunk length
+    wavDataView.setUint32(4, 36 + length, true);
+    // Write "WAVE" format
+    writeString(wavDataView, 8, 'WAVE');
+    // Write "fmt " chunk identifier
+    writeString(wavDataView, 12, 'fmt ');
+    // Write fmt chunk length
+    wavDataView.setUint32(16, 16, true);
+    // Write format code (1 for PCM)
+    wavDataView.setUint16(20, 1, true);
+    // Write number of channels
+    wavDataView.setUint16(22, numOfChan, true);
+    // Write sample rate
+    wavDataView.setUint32(24, sampleRate, true);
+    // Write byte rate (sample rate * block align)
+    wavDataView.setUint32(28, sampleRate * numOfChan * 2, true);
+    // Write block align (num of channels * bits per sample / 8)
+    wavDataView.setUint16(32, numOfChan * 2, true);
+    // Write bits per sample
+    wavDataView.setUint16(34, 16, true);
+    // Write "data" chunk identifier
+    writeString(wavDataView, 36, 'data');
+    // Write data chunk length
+    wavDataView.setUint32(40, length, true);
+    
+    // Create the final buffer with header and audio data
+    const wavData = new DataView(new ArrayBuffer(44 + length));
+    
+    // Copy WAV header
+    for (let i = 0; i < 44; i++) {
+        wavData.setUint8(i, wavDataView.getUint8(i));
+    }
+    
+    // Convert audio data to 16-bit PCM and write it
+    let offset = 44;
+    for (let i = 0; i < buffer.numberOfChannels; i++) {
+        const channelData = buffer.getChannelData(i);
+        for (let j = 0; j < channelData.length; j++) {
+            // Scale float32 to int16
+            const sample = Math.max(-1, Math.min(1, channelData[j]));
+            const int16Sample = sample < 0 
+                ? sample * 0x8000 
+                : sample * 0x7FFF;
+            
+            wavData.setInt16(offset, int16Sample, true);
+            offset += 2;
+        }
+    }
+    
+    // Create WAV blob
+    return new Blob([wavData], { type: 'audio/wav' });
+}
+
+// Helper function to write strings to DataView
+function writeString(dataView, offset, string) {
+    for (let i = 0; i < string.length; i++) {
+        dataView.setUint8(offset + i, string.charCodeAt(i));
+    }
 }
 
 // Disable auto-transcription for current meeting
