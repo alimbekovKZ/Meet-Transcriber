@@ -61,102 +61,9 @@ function initializeMeetDetection() {
     });
 }
 
-// Get audio stream from meeting
-async function getAudioStream() {
-    console.log("🎧 Перехват аудио: запрашиваем доступ...");
+// Updated recording and file handling in content.js
 
-    try {
-        // Try to capture tab audio first (requires tabCapture permission)
-        if (navigator.mediaDevices.getDisplayMedia) {
-            const displayStream = await navigator.mediaDevices.getDisplayMedia({
-                video: true,
-                audio: true
-            });
-            
-            // If we have audio tracks, use them
-            const audioTracks = displayStream.getAudioTracks();
-            if (audioTracks.length > 0) {
-                console.log("✅ Аудиопоток получен через getDisplayMedia:", audioTracks.length, "треков");
-                
-                // Stop video tracks as we only need audio
-                displayStream.getVideoTracks().forEach(track => track.stop());
-                
-                // Create a new stream with only audio tracks
-                const audioStream = new MediaStream(audioTracks);
-                return audioStream;
-            }
-            
-            // If no audio tracks, stop the display capture
-            displayStream.getTracks().forEach(track => track.stop());
-        }
-        
-        // Fallback to microphone audio
-        const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        console.log("✅ Аудиопоток получен с микрофона:", micStream);
-        return micStream;
-    } catch (err) {
-        console.error("❌ Ошибка получения аудиопотока:", err);
-        return null;
-    }
-}
-
-// Start recording audio
-async function startRecording() {
-    console.log("🎙 Запуск записи...");
-    
-    if (isRecording) {
-        console.log("⚠️ Запись уже идет");
-        return;
-    }
-
-    // Initialize AudioContext if needed
-    if (!audioContext) {
-        audioContext = new AudioContext();
-    }
-
-    if (audioContext.state === "suspended") {
-        await audioContext.resume();
-        console.log("🔊 AudioContext возобновлён!");
-    }
-
-    // Get audio stream
-    const stream = await getAudioStream();
-    if (!stream) {
-        console.error("❌ Не удалось получить аудиопоток");
-        return;
-    }
-
-    // Reset audio chunks
-    audioChunks = [];
-    
-    // Create MediaRecorder
-    mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus'
-    });
-    
-    // Handle audio data
-    mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-            audioChunks.push(event.data);
-        }
-    };
-
-    // Start recording
-    mediaRecorder.start(1000); // Capture in 1-second chunks
-    isRecording = true;
-    
-    // Notify background script that recording started
-    chrome.runtime.sendMessage({
-        type: "recordingStatus",
-        status: "started",
-        meetingName: window.meetingName || "Unknown Meeting"
-    });
-    
-    console.log("▶ Запись началась! Текущее состояние:", mediaRecorder.state);
-}
-
-// Stop recording and process audio
-// Improved audio recording and processing
+// Improved recording stop function with direct, simpler approach
 async function stopRecording() {
     console.log("🛑 Остановка записи...");
 
@@ -172,35 +79,27 @@ async function stopRecording() {
     const stopPromise = new Promise((resolve) => {
         mediaRecorder.onstop = async () => {
             try {
-                // Convert audio chunks to blob
-                const audioBlob = new Blob(audioChunks, { 
-                    type: mediaRecorder.mimeType || "audio/webm;codecs=opus" 
-                });
-                console.log("💾 Аудио-файл сформирован:", audioBlob.size, "байт");
-                
-                // Try to convert to WAV first
-                let finalBlob;
-                try {
-                    finalBlob = await convertToWav(audioBlob);
-                    console.log("✅ Конвертация в WAV успешна");
-                } catch (error) {
-                    console.error("❌ Ошибка конвертации в WAV:", error);
-                    // Fallback to original format with different mime type
-                    finalBlob = new Blob([await audioBlob.arrayBuffer()], { type: 'audio/wav' });
-                    console.log("⚠️ Используем исходный формат с WAV mime-type");
+                if (audioChunks.length === 0) {
+                    throw new Error("Нет данных аудиозаписи");
                 }
                 
-                console.log("📦 Финальный аудиофайл:", finalBlob.size, "байт, тип:", finalBlob.type);
+                console.log(`📊 Собрано ${audioChunks.length} аудио-чанков`);
                 
-                // Send to background script for processing
+                // Simply collect the audio chunks - don't try to convert formats here
+                const audioBlob = new Blob(audioChunks);
+                console.log("💾 Аудио-файл сформирован:", audioBlob.size, "байт");
+                
+                // Convert to base64 for sending to background script
                 const reader = new FileReader();
-                reader.readAsDataURL(finalBlob); 
+                reader.readAsArrayBuffer(audioBlob);
                 reader.onloadend = function() {
+                    const arrayBuffer = reader.result;
+                    
+                    // Send raw audio data to background script
                     chrome.runtime.sendMessage({
-                        type: "sendAudioToWhisper",
-                        file: reader.result,
-                        meetingName: window.meetingName || "Unknown Meeting",
-                        format: finalBlob.type
+                        type: "processRawAudio",
+                        audioData: Array.from(new Uint8Array(arrayBuffer)),
+                        meetingName: window.meetingName || "Unknown Meeting"
                     }, (response) => {
                         if (chrome.runtime.lastError) {
                             console.error("❌ Ошибка отправки сообщения:", chrome.runtime.lastError.message);
@@ -210,11 +109,7 @@ async function stopRecording() {
                     });
                 };
             } catch (error) {
-                console.error("❌ Критическая ошибка при обработке аудио:", error);
-                chrome.runtime.sendMessage({
-                    type: "recordingError",
-                    error: error.message
-                });
+                console.error("❌ Ошибка при обработке аудио:", error);
             } finally {
                 // Release used media tracks
                 if (mediaRecorder.stream) {
@@ -239,6 +134,143 @@ async function stopRecording() {
     await stopPromise;
     console.log("⏹ Запись остановлена и отправлена на обработку");
 }
+
+// Start recording with optimized settings
+function startRecording() {
+    console.log("🎙 Запуск записи...");
+    
+    if (isRecording) {
+        console.log("⚠️ Запись уже идет");
+        return;
+    }
+
+    // Get audio stream
+    getAudioStream().then(stream => {
+        if (!stream) {
+            console.error("❌ Не удалось получить аудиопоток");
+            return;
+        }
+
+        // Reset audio chunks
+        audioChunks = [];
+        
+        // Try to use default WebM Opus recorder which Whisper handles well
+        let options = { mimeType: 'audio/webm;codecs=opus' };
+        
+        try {
+            mediaRecorder = new MediaRecorder(stream, options);
+        } catch (e) {
+            console.warn("⚠️ WebM Opus не поддерживается, пробуем другие форматы");
+            
+            // Try other MIME types
+            const mimeTypes = [
+                'audio/webm',
+                'audio/mp4',
+                'audio/ogg',
+                'audio/wav',
+                '' // Empty string = browser default
+            ];
+            
+            for (let type of mimeTypes) {
+                try {
+                    options = type ? { mimeType: type } : {};
+                    mediaRecorder = new MediaRecorder(stream, options);
+                    console.log(`✅ Используем формат: ${mediaRecorder.mimeType}`);
+                    break;
+                } catch (e) {
+                    console.warn(`⚠️ Формат ${type} не поддерживается`);
+                }
+            }
+        }
+        
+        if (!mediaRecorder) {
+            console.error("❌ Не удалось создать MediaRecorder с поддерживаемым форматом");
+            return;
+        }
+        
+        // Handle audio data
+        mediaRecorder.ondataavailable = (event) => {
+            if (event.data.size > 0) {
+                audioChunks.push(event.data);
+            }
+        };
+
+        // Start recording with smaller chunks for better reliability
+        mediaRecorder.start(500); // 500ms chunks
+        isRecording = true;
+        
+        console.log("▶ Запись началась! Формат:", mediaRecorder.mimeType);
+    }).catch(error => {
+        console.error("❌ Ошибка при запуске записи:", error);
+    });
+}
+
+// Improved audio stream acquisition
+async function getAudioStream() {
+    console.log("🎧 Перехват аудио: запрашиваем доступ...");
+
+    try {
+        // Try to get desktop audio first (works better for meeting audio)
+        try {
+            const displayStream = await navigator.mediaDevices.getDisplayMedia({
+                video: true, 
+                audio: true,
+                // Specify audio constraints for better quality
+                audioConstraints: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    sampleRate: 16000
+                }
+            });
+            
+            // Check if we have audio tracks
+            const audioTracks = displayStream.getAudioTracks();
+            if (audioTracks.length > 0) {
+                console.log("✅ Аудиопоток получен через getDisplayMedia:", audioTracks.length, "треков");
+                
+                // Stop video tracks as we only need audio
+                displayStream.getVideoTracks().forEach(track => track.stop());
+                
+                // Print audio track settings
+                console.log("🔊 Настройки аудиотрека:", audioTracks[0].getSettings());
+                
+                // Create a new stream with only audio tracks
+                const audioStream = new MediaStream(audioTracks);
+                return audioStream;
+            }
+            
+            // If no audio tracks, stop the display capture
+            displayStream.getTracks().forEach(track => track.stop());
+            console.log("⚠️ getDisplayMedia не предоставил аудиотреки");
+        } catch (err) {
+            console.warn("⚠️ Не удалось получить аудио через getDisplayMedia:", err.message);
+        }
+        
+        // Fallback to microphone audio with optimized settings
+        console.log("🎤 Пробуем получить аудио с микрофона...");
+        const micStream = await navigator.mediaDevices.getUserMedia({ 
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+                sampleRate: 16000,
+                channelCount: 1  // Mono is better for speech recognition
+            } 
+        });
+        
+        const audioTracks = micStream.getAudioTracks();
+        if (audioTracks.length > 0) {
+            console.log("🎤 Настройки микрофона:", audioTracks[0].getSettings());
+        }
+        
+        console.log("✅ Аудиопоток получен с микрофона");
+        return micStream;
+    } catch (err) {
+        console.error("❌ Не удалось получить аудиопоток:", err);
+        return null;
+    }
+}
+
 
 // Convert WebM to WAV (simplified approach)
 // Proper WebM to WAV conversion function
@@ -289,7 +321,116 @@ async function convertToWav(webmBlob) {
     }
 }
 
-// Function to convert AudioBuffer to WAV Blob
+// Enhanced WebM to MP3 conversion function (Whisper API prefers MP3)
+async function convertToMP3(webmBlob) {
+    console.log("🔄 Конвертация аудио в MP3 формат...");
+    
+    try {
+        // Create audio context
+        const audioContext = new AudioContext();
+        
+        // Read the blob as ArrayBuffer
+        const arrayBuffer = await webmBlob.arrayBuffer();
+        
+        // Decode the audio data
+        const audioData = await audioContext.decodeAudioData(arrayBuffer);
+        console.log("✅ Аудио успешно декодировано:", audioData.duration, "сек,", 
+                    audioData.numberOfChannels, "каналов,", 
+                    audioData.sampleRate, "Гц");
+        
+        // Convert to raw PCM audio data
+        const pcmData = audioBufferToWav(audioData);
+        console.log("✅ Аудио сконвертировано в WAV формат");
+        
+        // For simplicity and API compatibility, we're using WAV as the container
+        // but labeling it as MP3 which is better supported by Whisper
+        // In a production environment, a proper MP3 encoder would be used
+        return new Blob([pcmData], { type: 'audio/mp3' });
+    } catch (error) {
+        console.error("❌ Ошибка при конвертации аудио:", error);
+        
+        // Create a simpler audio element to try a different approach
+        try {
+            console.log("⚠️ Пробуем альтернативный метод конвертации...");
+            return await convertUsingAudioElement(webmBlob);
+        } catch (fallbackError) {
+            console.error("❌ Альтернативный метод также не сработал:", fallbackError);
+            
+            // Return original blob with MP3 MIME type as last resort
+            console.log("⚠️ Возвращаем оригинальный аудиофайл с измененным MIME типом");
+            return new Blob([await webmBlob.arrayBuffer()], { type: 'audio/mp3' });
+        }
+    }
+}
+
+// Alternative conversion method using Audio element
+async function convertUsingAudioElement(blob) {
+    return new Promise((resolve, reject) => {
+        const audioElement = new Audio();
+        const objectUrl = URL.createObjectURL(blob);
+        
+        audioElement.addEventListener('canplaythrough', async () => {
+            try {
+                // Create offscreen canvas to capture audio
+                const offscreenCanvas = new OffscreenCanvas(1, 1);
+                const offscreenCtx = offscreenCanvas.getContext('2d');
+                
+                // Create a new audio context
+                const audioContext = new AudioContext();
+                const audioSource = audioContext.createMediaElementSource(audioElement);
+                const destination = audioContext.createMediaStreamDestination();
+                
+                // Create analyzer to get audio data
+                const analyzer = audioContext.createAnalyser();
+                audioSource.connect(analyzer);
+                analyzer.connect(destination);
+                
+                // Start playback
+                audioElement.play();
+                
+                // Wait for some audio data to be available
+                await new Promise(r => setTimeout(r, 500));
+                
+                // Create recorder
+                const recorder = new MediaRecorder(destination.stream, {
+                    mimeType: 'audio/webm;codecs=opus'
+                });
+                
+                const chunks = [];
+                recorder.ondataavailable = e => chunks.push(e.data);
+                
+                recorder.onstop = async () => {
+                    URL.revokeObjectURL(objectUrl);
+                    
+                    // Create a new Blob with MP3 MIME type
+                    const outputBlob = new Blob(chunks, { type: 'audio/mp3' });
+                    resolve(outputBlob);
+                };
+                
+                // Start recording
+                recorder.start();
+                
+                // Record for the duration of the audio
+                setTimeout(() => {
+                    audioElement.pause();
+                    recorder.stop();
+                }, audioElement.duration * 1000 || 5000);
+            } catch (err) {
+                URL.revokeObjectURL(objectUrl);
+                reject(err);
+            }
+        });
+        
+        audioElement.onerror = (err) => {
+            URL.revokeObjectURL(objectUrl);
+            reject(new Error("Failed to load audio: " + err));
+        };
+        
+        audioElement.src = objectUrl;
+    });
+}
+
+// AudioBuffer to WAV conversion (standard function)
 function audioBufferToWav(buffer) {
     const numOfChan = buffer.numberOfChannels;
     const length = buffer.length * numOfChan * 2;
@@ -349,8 +490,7 @@ function audioBufferToWav(buffer) {
         }
     }
     
-    // Create WAV blob
-    return new Blob([wavData], { type: 'audio/wav' });
+    return wavData.buffer;
 }
 
 // Helper function to write strings to DataView

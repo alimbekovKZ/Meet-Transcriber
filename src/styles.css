@@ -231,3 +231,148 @@ h1 {
   font-size: 13px;
   color: #b86200;
 }
+
+/* Transcription section styles */
+.transcription-section {
+  margin-top: 16px;
+  border-top: 1px solid #e0e0e0;
+  padding-top: 16px;
+}
+
+.transcription-section h2 {
+  font-size: 16px;
+  font-weight: 500;
+  margin: 0 0 8px 0;
+  color: #5f6368;
+}
+
+.empty-state {
+  background-color: #f8f9fa;
+  border-radius: 4px;
+  padding: 12px;
+  color: #5f6368;
+  font-style: italic;
+  text-align: center;
+}
+
+.transcription-info {
+  background-color: #e8f0fe;
+  border-radius: 4px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.transcription-info p {
+  margin: 4px 0;
+  font-size: 14px;
+}
+
+.transcription-info span {
+  font-weight: 500;
+}
+
+.download-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.download-actions button {
+  flex: 1;
+}
+
+/* Add these styles to your styles.css file */
+
+/* Improved download actions with flexible space for multiple buttons */
+.download-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.download-actions button {
+  flex: 1;
+  min-width: 120px;
+}
+
+/* Preview section styling */
+.preview-section {
+  margin-top: 12px;
+  border-top: 1px solid #e0e0e0;
+  padding-top: 8px;
+}
+
+.preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.preview-header h3 {
+  font-size: 14px;
+  margin: 0;
+  color: #5f6368;
+}
+
+.preview-content {
+  max-height: 150px;
+  overflow-y: auto;
+  background-color: #f8f9fa;
+  border-radius: 4px;
+  padding: 8px;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.preview-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: monospace;
+}
+
+/* Notification for download status */
+.notification {
+  position: fixed;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: #323232;
+  color: white;
+  padding: 8px 16px;
+  border-radius: 4px;
+  font-size: 14px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  z-index: 1000;
+  transition: opacity 0.3s, transform 0.3s;
+  opacity: 0;
+  transform: translateX(-50%) translateY(20px);
+}
+
+.notification.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* Additional button styles */
+.btn.link-primary {
+  background: none;
+  color: #1a73e8;
+  text-decoration: underline;
+  padding: 4px 8px;
+  text-align: center;
+}
+
+.btn.link-primary:hover {
+  color: #1765cc;
+  background-color: transparent;
+  text-decoration: underline;
+}
+
+/* Success indicator */
+.success-indicator {
+  display: inline-block;
+  color: #34a853;
+  margin-left: 4px;
+}

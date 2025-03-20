@@ -23,6 +23,32 @@
       <button id="disableBtn" class="btn secondary">Не записывать эту встречу</button>
     </div>
     
+    <!-- Transcription section -->
+    <div class="transcription-section" id="transcriptionSection">
+      <h2>Последняя транскрипция</h2>
+      <div id="noTranscription" class="empty-state">
+        <p>Нет сохраненных транскрипций</p>
+      </div>
+      <div id="hasTranscription" class="transcription-info" style="display:none;">
+        <p>Файл: <span id="transcriptionFilename">-</span></p>
+        <p>Время: <span id="transcriptionTime">-</span></p>
+        <div class="download-actions">
+          <button id="downloadBtn" class="btn primary">Скачать транскрипцию</button>
+          <!-- copyTextBtn will be inserted here by JavaScript -->
+          <button id="openFolderBtn" class="btn secondary">Открыть папку загрузок</button>
+        </div>
+        <div class="preview-section" id="previewSection" style="display:none;">
+          <div class="preview-header">
+            <h3>Предпросмотр</h3>
+            <button id="togglePreviewBtn" class="btn link">Показать текст</button>
+          </div>
+          <div class="preview-content" id="previewContent" style="display:none;">
+            <div class="preview-text" id="previewText"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    
     <div class="footer">
       <button id="settingsBtn" class="btn link">Настройки</button>
     </div>
