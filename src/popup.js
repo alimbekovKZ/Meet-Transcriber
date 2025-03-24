@@ -490,35 +490,35 @@ function addImprovedCopyButton() {
     return copyBtn;
 }
 
-// Show notification in popup
+// Улучшенная функция уведомлений
 function showNotification(message, duration = 3000) {
-    // Remove any existing notification
+    // Удаляем существующее уведомление, если оно есть
     const existingNotification = document.querySelector('.notification');
     if (existingNotification) {
         existingNotification.remove();
     }
     
-    // Create notification element
+    // Создаем элемент уведомления
     const notification = document.createElement('div');
     notification.className = 'notification';
     notification.textContent = message;
     
-    // Add to document
+    // Добавляем в документ
     document.body.appendChild(notification);
     
-    // Show notification after a small delay (for animation)
+    // Показываем уведомление после небольшой задержки (для анимации)
     setTimeout(() => {
         notification.classList.add('show');
     }, 10);
     
-    // Hide and remove after duration
+    // Скрываем и удаляем через указанное время
     setTimeout(() => {
         notification.classList.remove('show');
         setTimeout(() => {
             if (notification.parentNode) {
                 notification.remove();
             }
-        }, 300); // wait for fade-out animation
+        }, 300); // ждем завершения анимации
     }, duration);
 }
 
@@ -624,21 +624,193 @@ document.addEventListener("DOMContentLoaded", async () => {
     loadTranscriptionInfo();
 });
 
-// Start recording button
+// Улучшенный обработчик кнопки начала записи
 startBtn.addEventListener("click", async () => {
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    
-    if (tabs[0]?.url?.includes("meet.google.com")) {
-        chrome.tabs.sendMessage(tabs[0].id, { action: "startRecording" }, (response) => {
+    try {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        
+        if (!tabs[0]?.url?.includes("meet.google.com")) {
+            alert("Пожалуйста, откройте Google Meet для записи звонка.");
+            return;
+        }
+        
+        // Получаем статус разрешений перед запуском записи
+        const permissionStatus = await checkMediaPermissions();
+        
+        if (!permissionStatus.hasMicrophone) {
+            // Если нет разрешения на микрофон, показываем информационное окно
+            showPermissionDialog("microphone");
+            return;
+        }
+
+        // Обновляем UI до отправки сообщения
+        updateRecordingStatus(true);
+        
+        // Отправляем сообщение в content script
+        chrome.tabs.sendMessage(tabs[0].id, { 
+            action: "startRecording",
+            source: "userInitiated" // Важно: указываем, что действие инициировано пользователем
+        }, (response) => {
+            if (chrome.runtime.lastError) {
+                console.error("Ошибка связи с content script:", chrome.runtime.lastError.message);
+                
+                // Восстанавливаем UI, если возникла ошибка
+                updateRecordingStatus(false);
+                
+                // Показываем ошибку пользователю
+                showNotification("Ошибка запуска записи: " + chrome.runtime.lastError.message);
+                return;
+            }
+            
             if (response) {
                 console.log(response.status);
-                updateRecordingStatus(true);
+                
+                if (response.captureType === "microphone") {
+                    showNotification("Запись началась через микрофон", 
+                                   "Захват системного звука недоступен. Используется микрофон.");
+                } else {
+                    showNotification("Запись началась");
+                }
             }
         });
-    } else {
-        alert("Пожалуйста, откройте Google Meet для записи звонка.");
+    } catch (error) {
+        console.error("Ошибка при запуске записи:", error);
+        updateRecordingStatus(false);
+        showNotification("Не удалось запустить запись: " + error.message);
     }
 });
+
+// Проверка разрешений на доступ к медиа
+async function checkMediaPermissions() {
+    const result = {
+        hasMicrophone: false,
+        hasCamera: false
+    };
+    
+    try {
+        // Проверяем разрешение на доступ к микрофону
+        const micPermission = await navigator.permissions.query({ name: 'microphone' });
+        result.hasMicrophone = micPermission.state === 'granted';
+        
+        // Проверяем разрешение на доступ к камере
+        const cameraPermission = await navigator.permissions.query({ name: 'camera' });
+        result.hasCamera = cameraPermission.state === 'granted';
+        
+        return result;
+    } catch (error) {
+        console.error("Ошибка при проверке разрешений:", error);
+        return result;
+    }
+}
+
+// Показываем диалог для запроса разрешений
+function showPermissionDialog(permissionType) {
+    // Создаем диалоговое окно
+    const dialog = document.createElement('div');
+    dialog.className = 'permission-dialog';
+    dialog.innerHTML = `
+        <div class="permission-dialog-content">
+            <h3>Требуется разрешение</h3>
+            <p>Для работы функции записи необходим доступ к ${
+                permissionType === 'microphone' ? 'микрофону' : 
+                permissionType === 'camera' ? 'камере' : 
+                'медиаустройствам'
+            }.</p>
+            <p>Разрешите доступ при появлении запроса от браузера.</p>
+            <div class="permission-dialog-actions">
+                <button id="requestPermissionBtn" class="btn primary">Запросить доступ</button>
+                <button id="cancelPermissionBtn" class="btn secondary">Отмена</button>
+            </div>
+        </div>
+    `;
+    
+    // Добавляем стили
+    const style = document.createElement('style');
+    style.textContent = `
+        .permission-dialog {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10000;
+        }
+        
+        .permission-dialog-content {
+            background-color: white;
+            border-radius: 8px;
+            padding: 24px;
+            max-width: 80%;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+        }
+        
+        .permission-dialog h3 {
+            margin-top: 0;
+            color: #1a73e8;
+        }
+        
+        .permission-dialog-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            margin-top: 16px;
+        }
+    `;
+    document.head.appendChild(style);
+    
+    // Добавляем на страницу
+    document.body.appendChild(dialog);
+    
+    // Обработчики кнопок
+    document.getElementById('requestPermissionBtn').addEventListener('click', async () => {
+        try {
+            // Запрашиваем соответствующее разрешение
+            if (permissionType === 'microphone') {
+                await navigator.mediaDevices.getUserMedia({ audio: true });
+            } else if (permissionType === 'camera') {
+                await navigator.mediaDevices.getUserMedia({ video: true });
+            } else if (permissionType === 'display') {
+                await navigator.mediaDevices.getDisplayMedia({ video: true });
+            }
+            
+            // Закрываем диалог
+            document.body.removeChild(dialog);
+            
+            // Перезапускаем процесс
+            startBtn.click();
+        } catch (error) {
+            console.error(`Ошибка при запросе разрешения на ${permissionType}:`, error);
+            
+            // Обновляем сообщение в диалоге
+            const content = dialog.querySelector('.permission-dialog-content');
+            content.innerHTML = `
+                <h3>Доступ запрещен</h3>
+                <p>Вы не дали разрешение на доступ к ${
+                    permissionType === 'microphone' ? 'микрофону' : 
+                    permissionType === 'camera' ? 'камере' : 
+                    'экрану'
+                }.</p>
+                <p>Для работы плагина необходимо разрешить доступ в настройках браузера.</p>
+                <div class="permission-dialog-actions">
+                    <button id="closePermissionBtn" class="btn primary">Понятно</button>
+                </div>
+            `;
+            
+            // Обновляем обработчик
+            document.getElementById('closePermissionBtn').addEventListener('click', () => {
+                document.body.removeChild(dialog);
+            });
+        }
+    });
+    
+    document.getElementById('cancelPermissionBtn').addEventListener('click', () => {
+        document.body.removeChild(dialog);
+    });
+}
 
 // Stop recording button
 stopBtn.addEventListener("click", async () => {

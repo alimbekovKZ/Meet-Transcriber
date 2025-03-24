@@ -34,5 +34,11 @@
   "host_permissions": [
     "https://api.openai.com/*",
     "https://meet.google.com/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["images/*"],
+      "matches": ["https://meet.google.com/*"]
+    }
   ]
 }

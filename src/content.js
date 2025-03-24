@@ -1,142 +1,179 @@
-console.log("📌 Google Meet Transcription Plugin загружен");
-
-// Global variables
+// Глобальные переменные
 let audioContext;
 let mediaRecorder;
 let audioChunks = [];
 let isRecording = false;
 let meetingObserver = null;
 let autoTranscriptionEnabled = true;
+let hasRequestedPermission = false;  // Отслеживаем, запрашивали ли мы уже разрешение
+let cachedAudioStream = null;        // Кэшируем полученный поток
+let meetDetected = false;            // Флаг обнаружения конференции
 
-// Initialize when page loads
+// Инициализация при загрузке страницы
 window.addEventListener('load', () => {
-    // Check if we're on a Google Meet page
+    // Проверяем, находимся ли мы на странице Google Meet
     if (window.location.href.includes('meet.google.com')) {
         console.log("🔍 Обнаружена страница Google Meet");
-        initializeMeetDetection();
         
-        // Check if auto-transcription is enabled in settings
+        // Проверяем настройки автотранскрибации
         chrome.storage.local.get(['autoTranscription'], (result) => {
             if (result.hasOwnProperty('autoTranscription')) {
                 autoTranscriptionEnabled = result.autoTranscription;
+            }
+            
+            // Инициализируем обнаружение конференции только после получения настроек
+            if (autoTranscriptionEnabled) {
+                initializeMeetDetection();
+            } else {
+                console.log("📌 Автотранскрибация отключена в настройках");
             }
         });
     }
 });
 
-// Initialize meeting detection
+// Инициализация обнаружения конференции
 function initializeMeetDetection() {
-    // Look for meeting UI elements to detect when call starts
-    meetingObserver = new MutationObserver((mutations) => {
-        mutations.forEach((mutation) => {
-            if (mutation.addedNodes.length) {
-                // Check for video/audio elements that indicate a call has started
-                const callStarted = document.querySelector('[data-call-started]') || 
-                                    document.querySelector('[data-meeting-active]') ||
-                                    document.querySelectorAll('video').length > 0;
-                
-                if (callStarted && autoTranscriptionEnabled && !isRecording) {
-                    console.log("🎉 Обнаружено начало звонка в Google Meet");
-                    startRecording();
-                }
-                
-                // Check for meeting name to use in filename
-                const meetingNameElement = document.querySelector('[data-meeting-title]') || 
-                                          document.querySelector('.r6xAKc');
-                if (meetingNameElement) {
-                    window.meetingName = meetingNameElement.textContent.trim();
-                }
-            }
-        });
-    });
-    
-    // Start observing document body for changes
-    meetingObserver.observe(document.body, { childList: true, subtree: true });
-    
-    // Also detect page unload to stop recording
-    window.addEventListener('beforeunload', () => {
-        if (isRecording) {
-            stopRecording();
-        }
-    });
-}
-
-// Updated recording and file handling in content.js
-
-// Improved recording stop function with direct, simpler approach
-async function stopRecording() {
-    console.log("🛑 Остановка записи...");
-
-    if (!isRecording || !mediaRecorder || mediaRecorder.state === "inactive") {
-        console.log("⚠️ Запись не активна, нечего останавливать");
+    if (meetingObserver) {
+        console.log("⚠️ MeetingObserver уже инициализирован, пропускаем повторную инициализацию");
         return;
     }
-
-    // Change recording state
-    isRecording = false;
     
-    // Create a promise to handle the stop event
-    const stopPromise = new Promise((resolve) => {
-        mediaRecorder.onstop = async () => {
-            try {
-                if (audioChunks.length === 0) {
-                    throw new Error("Нет данных аудиозаписи");
-                }
-                
-                console.log(`📊 Собрано ${audioChunks.length} аудио-чанков`);
-                
-                // Simply collect the audio chunks - don't try to convert formats here
-                const audioBlob = new Blob(audioChunks);
-                console.log("💾 Аудио-файл сформирован:", audioBlob.size, "байт");
-                
-                // Convert to base64 for sending to background script
-                const reader = new FileReader();
-                reader.readAsArrayBuffer(audioBlob);
-                reader.onloadend = function() {
-                    const arrayBuffer = reader.result;
-                    
-                    // Send raw audio data to background script
-                    chrome.runtime.sendMessage({
-                        type: "processRawAudio",
-                        audioData: Array.from(new Uint8Array(arrayBuffer)),
-                        meetingName: window.meetingName || "Unknown Meeting"
-                    }, (response) => {
-                        if (chrome.runtime.lastError) {
-                            console.error("❌ Ошибка отправки сообщения:", chrome.runtime.lastError.message);
-                        } else {
-                            console.log("✅ Ответ от background.js:", response);
-                        }
-                    });
-                };
-            } catch (error) {
-                console.error("❌ Ошибка при обработке аудио:", error);
-            } finally {
-                // Release used media tracks
-                if (mediaRecorder.stream) {
-                    mediaRecorder.stream.getTracks().forEach(track => track.stop());
-                }
-                
-                resolve();
+    console.log("🔍 Инициализация обнаружения звонка");
+    
+    // Создаем MutationObserver с дебаунсингом для предотвращения частых срабатываний
+    let debounceTimeout = null;
+    
+    meetingObserver = new MutationObserver((mutations) => {
+        // Предотвращаем частые вызовы с помощью debounce
+        if (debounceTimeout) clearTimeout(debounceTimeout);
+        
+        debounceTimeout = setTimeout(() => {
+            // Проверяем только если мы еще не обнаружили звонок
+            if (!meetDetected) {
+                checkForActiveMeeting();
             }
-        };
+        }, 1000); // Задержка 1 секунда
     });
     
-    // Stop the recording
-    mediaRecorder.stop();
+    // Начинаем наблюдение за изменениями в DOM
+    meetingObserver.observe(document.body, { childList: true, subtree: true });
     
-    // Notify background script that recording stopped
-    chrome.runtime.sendMessage({
-        type: "recordingStatus",
-        status: "stopped"
+    // Также проверяем текущее состояние (возможно, мы уже в звонке)
+    checkForActiveMeeting();
+    
+    // Обрабатываем выгрузку страницы
+    window.addEventListener('beforeunload', () => {
+        cleanupResources();
     });
-    
-    // Wait for stop to complete
-    await stopPromise;
-    console.log("⏹ Запись остановлена и отправлена на обработку");
 }
 
-// Start recording with optimized settings
-function startRecording() {
+// Проверка наличия активной конференции
+function checkForActiveMeeting() {
+    // Проверяем наличие индикаторов активного звонка
+    const callStarted = 
+        document.querySelector('[data-call-started]') || 
+        document.querySelector('[data-meeting-active]') ||
+        document.querySelectorAll('video').length > 0 ||
+        document.querySelector('.r6xAKc') !== null;
+    
+    // Если обнаружен звонок и автотранскрибация включена
+    if (callStarted && !meetDetected && autoTranscriptionEnabled && !isRecording && !hasRequestedPermission) {
+        meetDetected = true;
+        console.log("🎉 Обнаружен активный звонок в Google Meet");
+        
+        // Получаем название встречи для последующего использования
+        const meetingNameElement = document.querySelector('[data-meeting-title]') || 
+                                 document.querySelector('.r6xAKc');
+        if (meetingNameElement) {
+            window.meetingName = meetingNameElement.textContent.trim();
+            console.log(`📝 Название конференции: ${window.meetingName}`);
+        }
+        
+        // Показываем уведомление о возможности записи, но НЕ запрашиваем доступ автоматически
+        showPermissionPrompt();
+    }
+}
+
+// Показываем уведомление с предложением начать запись
+function showPermissionPrompt() {
+    console.log("🔔 Показываем запрос разрешения на запись");
+    
+    // Создаем блок уведомления
+    const promptBox = document.createElement('div');
+    promptBox.id = 'gtm-permission-prompt';
+    promptBox.style.cssText = `
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        background-color: white;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        padding: 16px;
+        width: 300px;
+        z-index: 10000;
+        font-family: 'Google Sans', Roboto, Arial, sans-serif;
+    `;
+    
+    promptBox.innerHTML = `
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
+            <div style="width: 24px; height: 24px;">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#1a73e8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <line x1="12" y1="8" x2="12" y2="12"></line>
+                    <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                </svg>
+            </div>
+            <div style="font-weight: 500; color: #202124; font-size: 16px;">Google Meet Transcription</div>
+        </div>
+        <p style="margin: 0 0 12px 0; color: #5f6368; font-size: 14px;">
+            Обнаружен активный звонок. Хотите начать транскрибацию?
+        </p>
+        <div style="display: flex; gap: 8px; justify-content: flex-end;">
+            <button id="gtm-prompt-later" style="background: none; border: none; color: #5f6368; font-family: inherit; font-size: 14px; padding: 8px; cursor: pointer; border-radius: 4px;">
+                Позже
+            </button>
+            <button id="gtm-prompt-never" style="background: none; border: none; color: #5f6368; font-family: inherit; font-size: 14px; padding: 8px; cursor: pointer; border-radius: 4px;">
+                Не записывать
+            </button>
+            <button id="gtm-prompt-start" style="background: #1a73e8; border: none; color: white; font-family: inherit; font-size: 14px; padding: 8px 16px; cursor: pointer; border-radius: 4px;">
+                Начать запись
+            </button>
+        </div>
+    `;
+    
+    // Добавляем на страницу
+    document.body.appendChild(promptBox);
+    
+    // Обработчик кнопки "Начать запись"
+    document.getElementById('gtm-prompt-start').addEventListener('click', () => {
+        promptBox.remove();
+        // Отмечаем, что разрешение запрошено, чтобы не показывать повторно
+        hasRequestedPermission = true;
+        // Запускаем запись с явным взаимодействием пользователя
+        startRecording();
+    });
+    
+    // Обработчик кнопки "Позже"
+    document.getElementById('gtm-prompt-later').addEventListener('click', () => {
+        promptBox.remove();
+    });
+    
+    // Обработчик кнопки "Не записывать"
+    document.getElementById('gtm-prompt-never').addEventListener('click', () => {
+        promptBox.remove();
+        disableAutoTranscription();
+    });
+    
+    // Скрываем через 30 секунд, если пользователь не среагировал
+    setTimeout(() => {
+        if (document.getElementById('gtm-permission-prompt')) {
+            promptBox.remove();
+        }
+    }, 30000);
+}
+
+// Запуск записи (обновленная версия с кэшированием потока)
+async function startRecording() {
     console.log("🎙 Запуск записи...");
     
     if (isRecording) {
@@ -144,17 +181,29 @@ function startRecording() {
         return;
     }
 
-    // Get audio stream
-    getAudioStream().then(stream => {
+    try {
+        // Используем кэшированный поток, если он есть
+        let stream = cachedAudioStream;
+        
+        // Если нет кэшированного потока, получаем новый
         if (!stream) {
-            console.error("❌ Не удалось получить аудиопоток");
-            return;
+            stream = await getAudioStream();
+            
+            if (!stream) {
+                console.error("❌ Не удалось получить аудиопоток");
+                return;
+            }
+            
+            // Кэшируем поток для будущего использования
+            cachedAudioStream = stream;
+        } else {
+            console.log("🔄 Используем кэшированный аудиопоток");
         }
 
-        // Reset audio chunks
+        // Сбрасываем аудио-чанки
         audioChunks = [];
         
-        // Try to use default WebM Opus recorder which Whisper handles well
+        // Создаем MediaRecorder с оптимальным форматом
         let options = { mimeType: 'audio/webm;codecs=opus' };
         
         try {
@@ -162,13 +211,13 @@ function startRecording() {
         } catch (e) {
             console.warn("⚠️ WebM Opus не поддерживается, пробуем другие форматы");
             
-            // Try other MIME types
+            // Пробуем альтернативные форматы
             const mimeTypes = [
                 'audio/webm',
                 'audio/mp4',
                 'audio/ogg',
                 'audio/wav',
-                '' // Empty string = browser default
+                '' // Пустая строка = браузерный формат по умолчанию
             ];
             
             for (let type of mimeTypes) {
@@ -188,335 +237,458 @@ function startRecording() {
             return;
         }
         
-        // Handle audio data
+        // Обработка аудио-данных
         mediaRecorder.ondataavailable = (event) => {
             if (event.data.size > 0) {
                 audioChunks.push(event.data);
             }
         };
 
-        // Start recording with smaller chunks for better reliability
-        mediaRecorder.start(500); // 500ms chunks
+        // Запускаем запись с меньшими чанками для лучшей надежности
+        mediaRecorder.start(500); // 500ms чанки
         isRecording = true;
         
         console.log("▶ Запись началась! Формат:", mediaRecorder.mimeType);
-    }).catch(error => {
+        
+        // Показываем индикатор записи
+        showRecordingIndicator();
+        
+        // Отправляем сообщение в фоновый скрипт о начале записи
+        chrome.runtime.sendMessage({
+            type: "recordingStatus",
+            status: "started"
+        });
+    } catch (error) {
         console.error("❌ Ошибка при запуске записи:", error);
-    });
+    }
 }
 
-// Improved audio stream acquisition
+// Получение аудио-потока с кэшированием и улучшенной обработкой разрешений
 async function getAudioStream() {
     console.log("🎧 Перехват аудио: запрашиваем доступ...");
 
     try {
-        // Try to get desktop audio first (works better for meeting audio)
+        // Вариант 1: пытаемся получить аудио через захват экрана (системные звуки)
         try {
+            console.log("🖥️ Запрашиваем доступ к захвату экрана для системного звука...");
+            
+            // Этот API требует пользовательского взаимодействия
             const displayStream = await navigator.mediaDevices.getDisplayMedia({
-                video: true, 
+                video: {
+                    cursor: "never",
+                    displaySurface: "browser"
+                },
                 audio: true,
-                // Specify audio constraints for better quality
-                audioConstraints: {
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    sampleRate: 16000
-                }
+                systemAudio: "include" // Явно запрашиваем системный звук
             });
             
-            // Check if we have audio tracks
+            // Проверяем, что получили аудиотреки
             const audioTracks = displayStream.getAudioTracks();
             if (audioTracks.length > 0) {
                 console.log("✅ Аудиопоток получен через getDisplayMedia:", audioTracks.length, "треков");
                 
-                // Stop video tracks as we only need audio
+                // Останавливаем видеотреки, нам нужен только звук
                 displayStream.getVideoTracks().forEach(track => track.stop());
                 
-                // Print audio track settings
+                // Выводим настройки для диагностики
                 console.log("🔊 Настройки аудиотрека:", audioTracks[0].getSettings());
                 
-                // Create a new stream with only audio tracks
+                // Создаем новый поток только с аудио
                 const audioStream = new MediaStream(audioTracks);
+                
+                // Сохраняем тип аудио для последующего использования
+                window.audioSource = "system";
+                
+                // Показываем успешное уведомление
+                showNotification(
+                    "Запись звука системы",
+                    "Используется аудио из системы (оптимально для транскрибации)",
+                    "success"
+                );
+                
                 return audioStream;
             }
             
-            // If no audio tracks, stop the display capture
+            // Если нет аудиотреков, останавливаем все треки
             displayStream.getTracks().forEach(track => track.stop());
             console.log("⚠️ getDisplayMedia не предоставил аудиотреки");
         } catch (err) {
             console.warn("⚠️ Не удалось получить аудио через getDisplayMedia:", err.message);
+            // Пользователь отказался или произошла ошибка, продолжаем с микрофоном
         }
         
-        // Fallback to microphone audio with optimized settings
+        // Вариант 2: используем микрофон как запасной вариант
         console.log("🎤 Пробуем получить аудио с микрофона...");
+        
+        // Показываем уведомление о переключении на микрофон
+        showNotification(
+            "Используем микрофон",
+            "Системный звук недоступен, записываем звук с микрофона",
+            "warning"
+        );
+        
         const micStream = await navigator.mediaDevices.getUserMedia({ 
             audio: {
                 echoCancellation: true,
                 noiseSuppression: true,
                 autoGainControl: true,
                 sampleRate: 16000,
-                channelCount: 1  // Mono is better for speech recognition
+                channelCount: 1  // Моно лучше для распознавания речи
             } 
         });
         
         const audioTracks = micStream.getAudioTracks();
         if (audioTracks.length > 0) {
             console.log("🎤 Настройки микрофона:", audioTracks[0].getSettings());
+            window.audioSource = "microphone"; // Сохраняем тип аудио
         }
         
         console.log("✅ Аудиопоток получен с микрофона");
         return micStream;
     } catch (err) {
         console.error("❌ Не удалось получить аудиопоток:", err);
+        
+        // Показываем уведомление об ошибке
+        showNotification(
+            "Ошибка доступа к аудио", 
+            "Не удалось получить доступ к аудио. Проверьте разрешения браузера.",
+            "error"
+        );
+        
         return null;
     }
 }
 
+// Остановка записи (с безопасным освобождением ресурсов)
+async function stopRecording() {
+    console.log("🛑 Остановка записи...");
 
-// Convert WebM to WAV (simplified approach)
-// Proper WebM to WAV conversion function
-async function convertToWav(webmBlob) {
-    console.log("🔄 Конвертация аудио из WebM в WAV формат...");
-    
-    try {
-        // Create audio context
-        const audioContext = new AudioContext();
-        
-        // Read the blob as ArrayBuffer
-        const arrayBuffer = await webmBlob.arrayBuffer();
-        
-        // Decode the audio data
-        const audioData = await audioContext.decodeAudioData(arrayBuffer);
-        
-        // Create a buffer source
-        const source = audioContext.createBufferSource();
-        source.buffer = audioData;
-        
-        // Create offline context for rendering
-        const offlineCtx = new OfflineAudioContext(
-            audioData.numberOfChannels,
-            audioData.length,
-            audioData.sampleRate
-        );
-        
-        // Create buffer source for offline context
-        const offlineSource = offlineCtx.createBufferSource();
-        offlineSource.buffer = audioData;
-        offlineSource.connect(offlineCtx.destination);
-        offlineSource.start();
-        
-        // Render audio
-        const renderedBuffer = await offlineCtx.startRendering();
-        
-        // Convert to WAV format
-        const wavBlob = audioBufferToWav(renderedBuffer);
-        
-        console.log("✅ Аудио успешно конвертировано в WAV формат");
-        return wavBlob;
-    } catch (error) {
-        console.error("❌ Ошибка при конвертации аудио:", error);
-        
-        // Fallback: Try to send original blob with proper MIME type
-        console.log("⚠️ Используем оригинальный аудиофайл с измененным MIME типом");
-        return new Blob([await webmBlob.arrayBuffer()], { type: 'audio/wav' });
+    if (!isRecording || !mediaRecorder || mediaRecorder.state === "inactive") {
+        console.log("⚠️ Запись не активна, нечего останавливать");
+        return;
     }
-}
 
-// Enhanced WebM to MP3 conversion function (Whisper API prefers MP3)
-async function convertToMP3(webmBlob) {
-    console.log("🔄 Конвертация аудио в MP3 формат...");
+    // Меняем состояние записи
+    isRecording = false;
     
-    try {
-        // Create audio context
-        const audioContext = new AudioContext();
-        
-        // Read the blob as ArrayBuffer
-        const arrayBuffer = await webmBlob.arrayBuffer();
-        
-        // Decode the audio data
-        const audioData = await audioContext.decodeAudioData(arrayBuffer);
-        console.log("✅ Аудио успешно декодировано:", audioData.duration, "сек,", 
-                    audioData.numberOfChannels, "каналов,", 
-                    audioData.sampleRate, "Гц");
-        
-        // Convert to raw PCM audio data
-        const pcmData = audioBufferToWav(audioData);
-        console.log("✅ Аудио сконвертировано в WAV формат");
-        
-        // For simplicity and API compatibility, we're using WAV as the container
-        // but labeling it as MP3 which is better supported by Whisper
-        // In a production environment, a proper MP3 encoder would be used
-        return new Blob([pcmData], { type: 'audio/mp3' });
-    } catch (error) {
-        console.error("❌ Ошибка при конвертации аудио:", error);
-        
-        // Create a simpler audio element to try a different approach
-        try {
-            console.log("⚠️ Пробуем альтернативный метод конвертации...");
-            return await convertUsingAudioElement(webmBlob);
-        } catch (fallbackError) {
-            console.error("❌ Альтернативный метод также не сработал:", fallbackError);
-            
-            // Return original blob with MP3 MIME type as last resort
-            console.log("⚠️ Возвращаем оригинальный аудиофайл с измененным MIME типом");
-            return new Blob([await webmBlob.arrayBuffer()], { type: 'audio/mp3' });
-        }
-    }
-}
-
-// Alternative conversion method using Audio element
-async function convertUsingAudioElement(blob) {
-    return new Promise((resolve, reject) => {
-        const audioElement = new Audio();
-        const objectUrl = URL.createObjectURL(blob);
-        
-        audioElement.addEventListener('canplaythrough', async () => {
+    // Скрываем индикатор записи
+    hideRecordingIndicator();
+    
+    // Создаем промис для обработки события остановки
+    const stopPromise = new Promise((resolve) => {
+        mediaRecorder.onstop = async () => {
             try {
-                // Create offscreen canvas to capture audio
-                const offscreenCanvas = new OffscreenCanvas(1, 1);
-                const offscreenCtx = offscreenCanvas.getContext('2d');
+                if (audioChunks.length === 0) {
+                    throw new Error("Нет данных аудиозаписи");
+                }
                 
-                // Create a new audio context
-                const audioContext = new AudioContext();
-                const audioSource = audioContext.createMediaElementSource(audioElement);
-                const destination = audioContext.createMediaStreamDestination();
+                console.log(`📊 Собрано ${audioChunks.length} аудио-чанков`);
                 
-                // Create analyzer to get audio data
-                const analyzer = audioContext.createAnalyser();
-                audioSource.connect(analyzer);
-                analyzer.connect(destination);
+                // Собираем аудио-чанки в блоб
+                const audioBlob = new Blob(audioChunks);
+                console.log("💾 Аудио-файл сформирован:", audioBlob.size, "байт");
                 
-                // Start playback
-                audioElement.play();
-                
-                // Wait for some audio data to be available
-                await new Promise(r => setTimeout(r, 500));
-                
-                // Create recorder
-                const recorder = new MediaRecorder(destination.stream, {
-                    mimeType: 'audio/webm;codecs=opus'
-                });
-                
-                const chunks = [];
-                recorder.ondataavailable = e => chunks.push(e.data);
-                
-                recorder.onstop = async () => {
-                    URL.revokeObjectURL(objectUrl);
+                // Преобразуем в ArrayBuffer для отправки
+                const reader = new FileReader();
+                reader.readAsArrayBuffer(audioBlob);
+                reader.onloadend = function() {
+                    const arrayBuffer = reader.result;
                     
-                    // Create a new Blob with MP3 MIME type
-                    const outputBlob = new Blob(chunks, { type: 'audio/mp3' });
-                    resolve(outputBlob);
+                    // Отправляем аудиоданные в background script
+                    chrome.runtime.sendMessage({
+                        type: "processRawAudio",
+                        audioData: Array.from(new Uint8Array(arrayBuffer)),
+                        meetingName: window.meetingName || "Unknown Meeting"
+                    }, (response) => {
+                        if (chrome.runtime.lastError) {
+                            console.error("❌ Ошибка отправки сообщения:", chrome.runtime.lastError.message);
+                            
+                            // Показываем уведомление об ошибке
+                            showNotification(
+                                "Ошибка обработки", 
+                                "Не удалось отправить аудио на обработку: " + chrome.runtime.lastError.message,
+                                "error"
+                            );
+                        } else {
+                            console.log("✅ Ответ от background.js:", response);
+                            
+                            // Показываем уведомление об успешной отправке
+                            showNotification(
+                                "Аудио отправлено", 
+                                "Файл отправлен на транскрибацию",
+                                "success"
+                            );
+                        }
+                    });
                 };
+            } catch (error) {
+                console.error("❌ Ошибка при обработке аудио:", error);
                 
-                // Start recording
-                recorder.start();
-                
-                // Record for the duration of the audio
-                setTimeout(() => {
-                    audioElement.pause();
-                    recorder.stop();
-                }, audioElement.duration * 1000 || 5000);
-            } catch (err) {
-                URL.revokeObjectURL(objectUrl);
-                reject(err);
+                // Показываем уведомление об ошибке
+                showNotification(
+                    "Ошибка обработки", 
+                    "Не удалось обработать аудио: " + error.message,
+                    "error"
+                );
+            } finally {
+                // НЕ освобождаем треки, чтобы сохранить разрешения
+                // Но останавливаем запись
+                resolve();
             }
-        });
-        
-        audioElement.onerror = (err) => {
-            URL.revokeObjectURL(objectUrl);
-            reject(new Error("Failed to load audio: " + err));
         };
-        
-        audioElement.src = objectUrl;
     });
+    
+    // Останавливаем запись
+    mediaRecorder.stop();
+    
+    // Отправляем сообщение в background script
+    chrome.runtime.sendMessage({
+        type: "recordingStatus",
+        status: "stopped"
+    });
+    
+    // Ждем завершения обработки
+    await stopPromise;
+    console.log("⏹ Запись остановлена и отправлена на обработку");
 }
 
-// AudioBuffer to WAV conversion (standard function)
-function audioBufferToWav(buffer) {
-    const numOfChan = buffer.numberOfChannels;
-    const length = buffer.length * numOfChan * 2;
-    const sampleRate = buffer.sampleRate;
+// Очистка ресурсов при выгрузке страницы
+function cleanupResources() {
+    console.log("🧹 Очистка ресурсов перед выгрузкой страницы");
     
-    // Create DataView for WAV header
-    const wavDataView = new DataView(new ArrayBuffer(44));
-    
-    // Write "RIFF" identifier
-    writeString(wavDataView, 0, 'RIFF');
-    // Write RIFF chunk length
-    wavDataView.setUint32(4, 36 + length, true);
-    // Write "WAVE" format
-    writeString(wavDataView, 8, 'WAVE');
-    // Write "fmt " chunk identifier
-    writeString(wavDataView, 12, 'fmt ');
-    // Write fmt chunk length
-    wavDataView.setUint32(16, 16, true);
-    // Write format code (1 for PCM)
-    wavDataView.setUint16(20, 1, true);
-    // Write number of channels
-    wavDataView.setUint16(22, numOfChan, true);
-    // Write sample rate
-    wavDataView.setUint32(24, sampleRate, true);
-    // Write byte rate (sample rate * block align)
-    wavDataView.setUint32(28, sampleRate * numOfChan * 2, true);
-    // Write block align (num of channels * bits per sample / 8)
-    wavDataView.setUint16(32, numOfChan * 2, true);
-    // Write bits per sample
-    wavDataView.setUint16(34, 16, true);
-    // Write "data" chunk identifier
-    writeString(wavDataView, 36, 'data');
-    // Write data chunk length
-    wavDataView.setUint32(40, length, true);
-    
-    // Create the final buffer with header and audio data
-    const wavData = new DataView(new ArrayBuffer(44 + length));
-    
-    // Copy WAV header
-    for (let i = 0; i < 44; i++) {
-        wavData.setUint8(i, wavDataView.getUint8(i));
+    // Останавливаем наблюдатель, если он активен
+    if (meetingObserver) {
+        meetingObserver.disconnect();
+        meetingObserver = null;
     }
     
-    // Convert audio data to 16-bit PCM and write it
-    let offset = 44;
-    for (let i = 0; i < buffer.numberOfChannels; i++) {
-        const channelData = buffer.getChannelData(i);
-        for (let j = 0; j < channelData.length; j++) {
-            // Scale float32 to int16
-            const sample = Math.max(-1, Math.min(1, channelData[j]));
-            const int16Sample = sample < 0 
-                ? sample * 0x8000 
-                : sample * 0x7FFF;
-            
-            wavData.setInt16(offset, int16Sample, true);
-            offset += 2;
+    // Останавливаем запись, если она активна
+    if (isRecording && mediaRecorder && mediaRecorder.state !== "inactive") {
+        try {
+            mediaRecorder.stop();
+        } catch (e) {
+            console.error("❌ Ошибка при остановке записи:", e);
         }
     }
     
-    return wavData.buffer;
-}
-
-// Helper function to write strings to DataView
-function writeString(dataView, offset, string) {
-    for (let i = 0; i < string.length; i++) {
-        dataView.setUint8(offset + i, string.charCodeAt(i));
+    // Освобождаем потоки только при выгрузке страницы
+    if (cachedAudioStream) {
+        cachedAudioStream.getTracks().forEach(track => track.stop());
+        cachedAudioStream = null;
     }
 }
 
-// Disable auto-transcription for current meeting
+// Отключение автотранскрибации для текущей встречи
 function disableAutoTranscription() {
     autoTranscriptionEnabled = false;
+    hasRequestedPermission = true; // Отмечаем, что пользователь уже принял решение
     
     if (isRecording) {
         stopRecording();
     }
     
     console.log("🔕 Автоматическая транскрипция отключена для текущей встречи");
+    
+    // Показываем уведомление
+    showNotification(
+        "Транскрибация отключена", 
+        "Автоматическая транскрибация отключена для этой встречи",
+        "info"
+    );
 }
 
-// Listen for messages from popup.js
+// Функция для отображения индикатора записи
+function showRecordingIndicator() {
+    // Удаляем существующий индикатор, если он есть
+    const existingIndicator = document.getElementById('gtm-recording-indicator');
+    if (existingIndicator) {
+        existingIndicator.remove();
+    }
+    
+    // Создаем новый индикатор
+    const indicator = document.createElement('div');
+    indicator.id = 'gtm-recording-indicator';
+    indicator.style.cssText = `
+        position: fixed;
+        top: 8px;
+        left: 8px;
+        background-color: rgba(0, 0, 0, 0.7);
+        color: white;
+        padding: 8px 12px;
+        border-radius: 16px;
+        font-size: 12px;
+        display: flex;
+        align-items: center;
+        z-index: 9999;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    `;
+    
+    // Добавляем пульсирующую точку и текст
+    indicator.innerHTML = `
+        <div style="
+            width: 8px;
+            height: 8px;
+            background-color: #ea4335;
+            border-radius: 50%;
+            margin-right: 8px;
+            animation: pulse 2s infinite;
+        "></div>
+        <span>Запись активна</span>
+    `;
+    
+    // Добавляем стили для анимации
+    const style = document.createElement('style');
+    style.textContent = `
+        @keyframes pulse {
+            0% {
+                box-shadow: 0 0 0 0 rgba(234, 67, 53, 0.7);
+            }
+            70% {
+                box-shadow: 0 0 0 6px rgba(234, 67, 53, 0);
+            }
+            100% {
+                box-shadow: 0 0 0 0 rgba(234, 67, 53, 0);
+            }
+        }
+    `;
+    document.head.appendChild(style);
+    
+    // Добавляем на страницу
+    document.body.appendChild(indicator);
+}
+
+// Функция для скрытия индикатора записи
+function hideRecordingIndicator() {
+    const indicator = document.getElementById('gtm-recording-indicator');
+    if (indicator) {
+        indicator.remove();
+    }
+}
+
+// Функция для отображения уведомлений
+function showNotification(title, message, type = "info", duration = 5000) {
+    // Проверяем, существует ли контейнер для уведомлений
+    let notificationContainer = document.getElementById('gtm-notification-container');
+    
+    if (!notificationContainer) {
+        // Создаем контейнер для уведомлений
+        notificationContainer = document.createElement('div');
+        notificationContainer.id = 'gtm-notification-container';
+        notificationContainer.style.cssText = `
+            position: fixed;
+            top: 16px;
+            right: 16px;
+            z-index: 9999;
+            width: 320px;
+        `;
+        document.body.appendChild(notificationContainer);
+    }
+    
+    // Определяем цвет в зависимости от типа
+    let typeColor;
+    let bgColor;
+    switch (type) {
+        case "success":
+            typeColor = "#0f9d58";
+            bgColor = "#e6f4ea";
+            break;
+        case "warning":
+            typeColor = "#f4b400";
+            bgColor = "#fef7e0";
+            break;
+        case "error":
+            typeColor = "#ea4335";
+            bgColor = "#fce8e6";
+            break;
+        default:
+            typeColor = "#1a73e8";
+            bgColor = "#e8f0fe";
+    }
+    
+    // Создаем уведомление
+    const notification = document.createElement('div');
+    notification.style.cssText = `
+        background-color: ${bgColor};
+        border-left: 4px solid ${typeColor};
+        border-radius: 4px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+        margin-bottom: 8px;
+        overflow: hidden;
+        animation: slideIn 0.3s ease-out;
+    `;
+    
+    notification.innerHTML = `
+        <div style="padding: 12px 16px;">
+            <div style="display: flex; align-items: center; margin-bottom: 6px;">
+                <div style="color: ${typeColor}; font-weight: 500; font-size: 14px;">
+                    ${title}
+                </div>
+                <button class="close-btn" style="background: none; border: none; cursor: pointer; margin-left: auto; color: #5f6368; font-size: 14px;">
+                    ✕
+                </button>
+            </div>
+            <div style="color: #202124; font-size: 13px;">
+                ${message}
+            </div>
+        </div>
+    `;
+    
+    // Добавляем анимацию
+    const style = document.createElement('style');
+    style.textContent = `
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        
+        @keyframes slideOut {
+            from { transform: translateX(0); opacity: 1; }
+            to { transform: translateX(100%); opacity: 0; }
+        }
+        
+        .slide-out {
+            animation: slideOut 0.3s ease-in forwards;
+        }
+    `;
+    document.head.appendChild(style);
+    
+    // Добавляем уведомление в контейнер
+    notificationContainer.appendChild(notification);
+    
+    // Настраиваем закрытие по клику на крестик
+    const closeBtn = notification.querySelector('.close-btn');
+    closeBtn.addEventListener('click', () => {
+        notification.classList.add('slide-out');
+        setTimeout(() => {
+            if (notification.parentNode) {
+                notification.remove();
+            }
+        }, 300);
+    });
+    
+    // Автоматическое закрытие через указанное время
+    setTimeout(() => {
+        if (notification.parentNode) {
+            notification.classList.add('slide-out');
+            setTimeout(() => {
+                if (notification.parentNode) {
+                    notification.remove();
+                }
+            }, 300);
+        }
+    }, duration);
+}
+
+// Слушаем сообщения от popup.js
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === "startRecording") {
         console.log("📩 Получено сообщение 'startRecording'");
+        hasRequestedPermission = true; // Отмечаем, что запрос был инициирован пользователем
         startRecording();
-        sendResponse({ status: "✅ Запись началась!" });
+        sendResponse({ 
+            status: "✅ Запись началась!",
+            captureType: window.audioSource || "system"
+        });
     }
     else if (message.action === "stopRecording") {
         console.log("📩 Получено сообщение 'stopRecording'");
@@ -531,10 +703,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     else if (message.action === "getRecordingStatus") {
         sendResponse({ 
             isRecording: isRecording,
-            meetingDetected: !!window.meetingName,
-            meetingName: window.meetingName || "Unknown Meeting"
+            meetingDetected: meetDetected,
+            meetingName: window.meetingName || "Unknown Meeting",
+            hasRequestedPermission: hasRequestedPermission,
+            audioSource: window.audioSource || "unknown"
         });
     }
     
-    return true; // Important for asynchronous sendResponse
+    return true; // Важно для асинхронного sendResponse
 });
