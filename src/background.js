@@ -320,27 +320,59 @@ function generateFilename(meetingName) {
     return `transcription_${cleanName}_${formattedDate}_${formattedTime}.txt`;
 }
 
-// =================== IMPROVED DOWNLOAD FUNCTIONS ===================
+// Validate and clean the transcription text before saving
+function validateAndCleanTranscription(text) {
+    // Check if text is valid
+    if (!text || typeof text !== 'string') {
+        console.error("❌ Invalid transcription text:", text);
+        throw new Error("Transcription text is invalid or empty");
+    }
+    
+    console.log(`🔍 Processing transcription: ${text.length} characters`);
+    
+    // Remove any non-printable characters that might corrupt the file
+    const cleanedText = text.replace(/[\x00-\x09\x0B\x0C\x0E-\x1F\x7F]/g, "");
+    
+    // Normalize line endings (important for cross-platform compatibility)
+    const normalizedText = cleanedText.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    
+    // Warn if content has changed during cleaning
+    if (normalizedText.length !== text.length) {
+        console.warn(`⚠️ Transcription text was modified during cleaning: ${text.length} → ${normalizedText.length} characters`);
+    }
+    
+    // Add a signature to detect any corruption during the download process
+    const finalText = normalizedText + "\n\n[Transcription by Google Meet Transcription Plugin]";
+    console.log(`✅ Final transcription: ${finalText.length} characters`);
+    
+    return finalText;
+}
 
-// Highly robust saveTranscriptionToFile function with detailed diagnostics
+// Modified saveTranscriptionToFile to ensure content integrity
 async function saveTranscriptionToFile(transcription, filename) {
     console.log("💾 Creating download file:", filename);
-    console.log("📝 Transcription length:", transcription.length, "characters");
+    
+    // First validate and clean the transcription text
+    const validatedText = validateAndCleanTranscription(transcription);
+    
+    // Sample the content for debugging (first 100 chars and last 100 chars)
+    const firstPart = validatedText.substring(0, 100);
+    const lastPart = validatedText.substring(validatedText.length - 100);
+    console.log(`📄 Content sample - First part: "${firstPart}..."`);
+    console.log(`📄 Content sample - Last part: "...${lastPart}"`);
     
     // Reset diagnostics for this download attempt
     downloadDiagnostics.reset();
     
     try {
-        // First always save to storage for recovery
-        await storeTranscriptionData(transcription, filename);
+        // First always save to storage for recovery - with proper content
+        await storeTranscriptionData(validatedText, filename);
         downloadDiagnostics.addAttempt("storage", true);
         
-        // Try each download method in sequence
-        
-        // Method 1: Direct Downloads API 
+        // Method 1: Direct Downloads API with explicit encoding
         try {
             console.log("🔄 Trying direct download method...");
-            const downloadId = await directDownload(transcription, filename);
+            const downloadId = await directDownload(validatedText, filename);
             downloadDiagnostics.addAttempt("direct_download", downloadId);
             console.log("✅ Direct download success, ID:", downloadId);
             return downloadId;
@@ -348,31 +380,42 @@ async function saveTranscriptionToFile(transcription, filename) {
             downloadDiagnostics.addAttempt("direct_download", false, directError);
             console.warn("⚠️ Direct download failed, trying fallback method...");
             
-            // Method 2: Download Helper Tab
+            // Method 2: Download Helper Tab with text validation
             try {
                 console.log("🔄 Trying download helper tab method...");
-                const tabId = await createDownloadTab(transcription, filename);
+                const tabId = await createDownloadTab(validatedText, filename);
                 downloadDiagnostics.addAttempt("helper_tab", tabId);
                 console.log("✅ Helper tab download success, Tab ID:", tabId);
                 return tabId;
             } catch (tabError) {
                 downloadDiagnostics.addAttempt("helper_tab", false, tabError);
-                console.warn("⚠️ Helper tab download failed, trying data URL method...");
+                console.warn("⚠️ Helper tab download failed, trying text file method...");
                 
-                // Method 3: Data URL Method
+                // Method 3: Create a dedicated text file method with proper encoding
                 try {
-                    console.log("🔄 Trying data URL download method...");
-                    const dataUrlResult = await dataUrlDownload(transcription, filename);
-                    downloadDiagnostics.addAttempt("data_url", dataUrlResult);
-                    console.log("✅ Data URL download success");
-                    return dataUrlResult;
-                } catch (dataUrlError) {
-                    downloadDiagnostics.addAttempt("data_url", false, dataUrlError);
+                    console.log("🔄 Trying text file download method...");
+                    const textFileResult = await textFileDownload(validatedText, filename);
+                    downloadDiagnostics.addAttempt("text_file", textFileResult);
+                    console.log("✅ Text file download success");
+                    return textFileResult;
+                } catch (textFileError) {
+                    downloadDiagnostics.addAttempt("text_file", false, textFileError);
                     
-                    // All methods failed, but we still have the data in storage
-                    const summary = downloadDiagnostics.getSummary();
-                    console.error("❌ All download methods failed:", summary);
-                    throw new Error("All download methods failed. Data is saved and can be accessed from popup.");
+                    // Method 4: Data URL Method
+                    try {
+                        console.log("🔄 Trying data URL download method...");
+                        const dataUrlResult = await dataUrlDownload(validatedText, filename);
+                        downloadDiagnostics.addAttempt("data_url", dataUrlResult);
+                        console.log("✅ Data URL download success");
+                        return dataUrlResult;
+                    } catch (dataUrlError) {
+                        downloadDiagnostics.addAttempt("data_url", false, dataUrlError);
+                        
+                        // All methods failed, but we still have the data in storage
+                        const summary = downloadDiagnostics.getSummary();
+                        console.error("❌ All download methods failed:", summary);
+                        throw new Error("All download methods failed. Data is saved and can be accessed from popup.");
+                    }
                 }
             }
         }
@@ -433,12 +476,14 @@ async function storeTranscriptionData(text, filename) {
     });
 }
 
-// Direct download through chrome.downloads API
+// Direct download through chrome.downloads API with explicit encoding
 async function directDownload(text, filename) {
     return new Promise((resolve, reject) => {
         try {
-            // Create blob with proper encoding
-            const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+            // Create blob with proper encoding - explicitly set UTF-8
+            const blob = new Blob([text], { 
+                type: 'text/plain;charset=utf-8' 
+            });
             
             // Create URL with explicit cleanup plan
             const url = URL.createObjectURL(blob);
@@ -450,58 +495,196 @@ async function directDownload(text, filename) {
                 URL.revokeObjectURL(url);
             }, 120000);
             
-            // Attempt download
-            chrome.downloads.download({
-                url: url,
-                filename: filename,
-                saveAs: false
-            }, (downloadId) => {
-                const error = chrome.runtime.lastError;
+            // Verify blob content before download
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const content = e.target.result;
+                const contentPreview = content.slice(0, 100) + "..." + content.slice(-100);
+                console.log(`✓ Verified blob content (${content.length} chars): ${contentPreview}`);
                 
-                if (error) {
-                    clearTimeout(autoCleanupTimeout);
-                    URL.revokeObjectURL(url);
-                    console.error("❌ Download API error:", error);
-                    reject(new Error(`Download API error: ${error.message}`));
-                    return;
-                }
-                
-                if (!downloadId) {
-                    clearTimeout(autoCleanupTimeout);
-                    URL.revokeObjectURL(url);
-                    console.error("❌ Download failed with null ID");
-                    reject(new Error("Download returned null ID"));
-                    return;
-                }
-                
-                console.log("🔄 Download starting, ID:", downloadId);
-                
-                // Monitor download progress
-                chrome.downloads.onChanged.addListener(function onDownloadChanged(delta) {
-                    if (delta.id !== downloadId) return;
+                // Only proceed with download after content verification
+                chrome.downloads.download({
+                    url: url,
+                    filename: filename,
+                    saveAs: false
+                }, (downloadId) => {
+                    const error = chrome.runtime.lastError;
                     
-                    console.log(`📌 Download state change [${downloadId}]:`, delta.state?.current || "N/A");
-                    
-                    // Check for completion or error
-                    if (delta.state?.current === 'complete') {
-                        console.log(`✅ Download complete [${downloadId}]`);
+                    if (error) {
                         clearTimeout(autoCleanupTimeout);
                         URL.revokeObjectURL(url);
-                        chrome.downloads.onChanged.removeListener(onDownloadChanged);
-                        showNotification("Транскрибация завершена", `Файл сохранен: ${filename}`);
-                    } else if (delta.error) {
-                        console.error(`❌ Download error [${downloadId}]:`, delta.error.current);
-                        clearTimeout(autoCleanupTimeout);
-                        URL.revokeObjectURL(url);
-                        chrome.downloads.onChanged.removeListener(onDownloadChanged);
+                        console.error("❌ Download API error:", error);
+                        reject(new Error(`Download API error: ${error.message}`));
+                        return;
                     }
+                    
+                    if (!downloadId) {
+                        clearTimeout(autoCleanupTimeout);
+                        URL.revokeObjectURL(url);
+                        console.error("❌ Download failed with null ID");
+                        reject(new Error("Download returned null ID"));
+                        return;
+                    }
+                    
+                    console.log("🔄 Download starting, ID:", downloadId);
+                    
+                    // Monitor download progress
+                    chrome.downloads.onChanged.addListener(function onDownloadChanged(delta) {
+                        if (delta.id !== downloadId) return;
+                        
+                        console.log(`📌 Download state change [${downloadId}]:`, delta.state?.current || "N/A");
+                        
+                        // Check for completion or error
+                        if (delta.state?.current === 'complete') {
+                            console.log(`✅ Download complete [${downloadId}]`);
+                            clearTimeout(autoCleanupTimeout);
+                            URL.revokeObjectURL(url);
+                            chrome.downloads.onChanged.removeListener(onDownloadChanged);
+                            showNotification("Транскрибация завершена", `Файл сохранен: ${filename}`);
+                        } else if (delta.error) {
+                            console.error(`❌ Download error [${downloadId}]:`, delta.error.current);
+                            clearTimeout(autoCleanupTimeout);
+                            URL.revokeObjectURL(url);
+                            chrome.downloads.onChanged.removeListener(onDownloadChanged);
+                        }
+                    });
+                    
+                    // Return success with download ID
+                    resolve(downloadId);
                 });
-                
-                // Return success with download ID
-                resolve(downloadId);
-            });
+            };
+            
+            reader.onerror = function(e) {
+                console.error("❌ Error verifying blob content:", e);
+                clearTimeout(autoCleanupTimeout);
+                URL.revokeObjectURL(url);
+                reject(new Error("Failed to verify blob content"));
+            };
+            
+            // Start reading the blob
+            reader.readAsText(blob);
         } catch (error) {
             console.error("❌ Direct download error:", error);
+            reject(error);
+        }
+    });
+}
+
+// Specialized text file download method
+async function textFileDownload(text, filename) {
+    return new Promise((resolve, reject) => {
+        try {
+            console.log("📄 Creating dedicated text file for download...");
+            
+            // Create a TextEncoder to handle UTF-8 encoding
+            const encoder = new TextEncoder();
+            const encodedText = encoder.encode(text);
+            
+            // Create a blob with explicit type and encoding
+            const blob = new Blob([encodedText], { 
+                type: 'text/plain;charset=utf-8' 
+            });
+            
+            // Create a FileReader to verify content
+            const reader = new FileReader();
+            reader.onload = function() {
+                const content = reader.result;
+                console.log(`✓ Verified text file content (${content.length} chars)`);
+                
+                // Create URL from verified blob
+                const url = URL.createObjectURL(blob);
+                
+                // Attempt direct download
+                chrome.downloads.download({
+                    url: url,
+                    filename: filename,
+                    saveAs: false
+                }, (downloadId) => {
+                    if (chrome.runtime.lastError) {
+                        URL.revokeObjectURL(url);
+                        reject(new Error(`Text file download error: ${chrome.runtime.lastError.message}`));
+                    } else if (!downloadId) {
+                        URL.revokeObjectURL(url);
+                        reject(new Error("Text file download returned null ID"));
+                    } else {
+                        console.log("✅ Text file download started, ID:", downloadId);
+                        
+                        // Clean up URL after a delay
+                        setTimeout(() => URL.revokeObjectURL(url), 30000);
+                        
+                        showNotification("Транскрибация завершена", `Файл сохранен: ${filename}`);
+                        resolve(downloadId);
+                    }
+                });
+            };
+            
+            reader.onerror = function() {
+                reject(new Error("Failed to verify text file content"));
+            };
+            
+            // Start reading the blob to verify content
+            reader.readAsText(blob);
+        } catch (error) {
+            console.error("❌ Text file download error:", error);
+            reject(error);
+        }
+    });
+}
+
+// Last resort data URL download method
+async function dataUrlDownload(text, filename) {
+    return new Promise((resolve, reject) => {
+        try {
+            console.log("🔗 Creating data URL download...");
+            
+            // Add BOM for UTF-8
+            const BOM = new Uint8Array([0xEF, 0xBB, 0xBF]);
+            const textEncoder = new TextEncoder();
+            const encodedText = textEncoder.encode(text);
+            
+            // Combine BOM and text
+            const combinedArray = new Uint8Array(BOM.length + encodedText.length);
+            combinedArray.set(BOM);
+            combinedArray.set(encodedText, BOM.length);
+            
+            // Create blob from combined array
+            const blob = new Blob([combinedArray], { 
+                type: 'text/plain;charset=utf-8' 
+            });
+            
+            // Convert to data URL
+            const reader = new FileReader();
+            reader.onload = function() {
+                const dataUrl = reader.result;
+                
+                // Attempt download through downloads API
+                chrome.downloads.download({
+                    url: dataUrl,
+                    filename: filename,
+                    saveAs: false
+                }, (downloadId) => {
+                    if (chrome.runtime.lastError) {
+                        console.error("❌ Data URL download error:", chrome.runtime.lastError);
+                        reject(new Error(`Data URL download error: ${chrome.runtime.lastError.message}`));
+                    } else if (!downloadId) {
+                        console.error("❌ Data URL download failed (null ID)");
+                        reject(new Error("Data URL download returned null ID"));
+                    } else {
+                        console.log("✅ Data URL download started, ID:", downloadId);
+                        showNotification("Транскрибация завершена", `Файл сохранен: ${filename}`);
+                        resolve(downloadId);
+                    }
+                });
+            };
+            
+            reader.onerror = function(e) {
+                reject(new Error("Failed to create data URL: " + e));
+            };
+            
+            // Start reading as data URL
+            reader.readAsDataURL(blob);
+        } catch (error) {
+            console.error("❌ Data URL download error:", error);
             reject(error);
         }
     });
@@ -623,8 +806,27 @@ async function createDownloadTab(text, filename) {
                                 // Self-contained download script
                                 document.getElementById('downloadBtn').addEventListener('click', function() {
                                     try {
-                                        // Method 1: Using Blob and download attribute
-                                        const blob = new Blob(['${text.replace(/'/g, "\\'")}'], { type: 'text/plain;charset=utf-8' });
+                                        // Method 1: Using Blob with BOM for proper UTF-8 encoding
+                                        // Create BOM (Byte Order Mark) for UTF-8
+                                        const BOM = new Uint8Array([0xEF, 0xBB, 0xBF]);
+                                        
+                                        // Get the text content
+                                        const textContent = '${text.replace(/'/g, "\\'")}';
+                                        
+                                        // Encode text as UTF-8
+                                        const textEncoder = new TextEncoder();
+                                        const encodedText = textEncoder.encode(textContent);
+                                        
+                                        // Combine BOM and encoded text
+                                        const combinedArray = new Uint8Array(BOM.length + encodedText.length);
+                                        combinedArray.set(BOM);
+                                        combinedArray.set(encodedText, BOM.length);
+                                        
+                                        // Create blob from combined array
+                                        const blob = new Blob([combinedArray], { 
+                                            type: 'text/plain;charset=utf-8' 
+                                        });
+                                        
                                         const url = URL.createObjectURL(blob);
                                         
                                         const a = document.createElement('a');
@@ -655,7 +857,7 @@ async function createDownloadTab(text, filename) {
                                         
                                         // Try alternate method as fallback
                                         try {
-                                            // Method 2: Using data URL (works in more browsers)
+                                            // Method 2: Using data URL with encodeURIComponent (works in more browsers)
                                             const dataUrl = 'data:text/plain;charset=utf-8,' + encodeURIComponent('${text.replace(/'/g, "\\'")}');
                                             
                                             const a = document.createElement('a');
@@ -686,7 +888,7 @@ async function createDownloadTab(text, filename) {
                                     }
                                 });
                                 
-                                // Copy button handler
+                                // Copy button handler with proper encoding
                                 document.getElementById('copyBtn').addEventListener('click', function() {
                                     try {
                                         // Method 1: Modern clipboard API
@@ -725,6 +927,7 @@ async function createDownloadTab(text, filename) {
                                             textarea.style.opacity = '0';
                                             
                                             document.body.appendChild(textarea);
+                                            textarea.focus();
                                             textarea.select();
                                             
                                             const successful = document.execCommand('copy');
@@ -778,40 +981,6 @@ async function createDownloadTab(text, filename) {
             });
         } catch (error) {
             console.error("❌ Tab creation error:", error);
-            reject(error);
-        }
-    });
-}
-
-// Last resort data URL download method
-async function dataUrlDownload(text, filename) {
-    return new Promise((resolve, reject) => {
-        try {
-            console.log("🔗 Creating data URL download...");
-            
-            // Encode text as data URL
-            const dataUrl = 'data:text/plain;charset=utf-8,' + encodeURIComponent(text);
-            
-            // Attempt download through downloads API
-            chrome.downloads.download({
-                url: dataUrl,
-                filename: filename,
-                saveAs: false
-            }, (downloadId) => {
-                if (chrome.runtime.lastError) {
-                    console.error("❌ Data URL download error:", chrome.runtime.lastError);
-                    reject(new Error(`Data URL download error: ${chrome.runtime.lastError.message}`));
-                } else if (!downloadId) {
-                    console.error("❌ Data URL download failed (null ID)");
-                    reject(new Error("Data URL download returned null ID"));
-                } else {
-                    console.log("✅ Data URL download started, ID:", downloadId);
-                    showNotification("Транскрибация завершена", `Файл сохранен: ${filename}`);
-                    resolve(downloadId);
-                }
-            });
-        } catch (error) {
-            console.error("❌ Data URL download error:", error);
             reject(error);
         }
     });

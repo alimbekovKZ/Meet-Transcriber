@@ -17,10 +17,78 @@ const transcriptionTime = document.getElementById("transcriptionTime");
 const downloadBtn = document.getElementById("downloadBtn");
 const openFolderBtn = document.getElementById("openFolderBtn");
 
+// Permission handling elements
+const permissionHelp = document.getElementById('permissionHelp');
+const grantPermissionBtn = document.getElementById('grantPermissionBtn');
+
 // Improved download button with multiple fallbacks and error recovery
 downloadBtn.addEventListener("click", () => {
     downloadWithDiagnostics();
 });
+
+// Grant permission button handler
+grantPermissionBtn.addEventListener("click", async () => {
+    try {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        
+        if (!tabs[0] || !tabs[0].url.includes("meet.google.com")) {
+            showNotification("Откройте Google Meet для настройки разрешений");
+            return;
+        }
+        
+        // Request the user to grant screen capture permission
+        chrome.tabs.sendMessage(tabs[0].id, { action: "requestPermission" }, (response) => {
+            if (chrome.runtime.lastError) {
+                console.error("Error requesting permission:", chrome.runtime.lastError);
+                showNotification("Ошибка запроса разрешений");
+                return;
+            }
+            
+            if (response && response.success) {
+                if (response.hasAudio) {
+                    showNotification("✅ Разрешения получены успешно");
+                    permissionHelp.style.display = 'none';
+                } else {
+                    showNotification("⚠️ Разрешение на доступ к аудио не получено");
+                }
+            } else {
+                showNotification("❌ Не удалось получить разрешения");
+            }
+        });
+    } catch (error) {
+        console.error("Error requesting permissions:", error);
+        showNotification("Ошибка запроса разрешений: " + error.message);
+    }
+});
+
+// Check for permission issues and show help if needed
+async function checkPermissions() {
+    try {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        
+        if (!tabs[0] || !tabs[0].url.includes("meet.google.com")) {
+            return; // Not on Google Meet, skip
+        }
+        
+        // Check if we have permission issues
+        chrome.tabs.sendMessage(tabs[0].id, { action: "checkPermissions" }, (response) => {
+            if (chrome.runtime.lastError) {
+                console.error("Error checking permissions:", chrome.runtime.lastError);
+                return;
+            }
+            
+            if (response && response.hasPermissionIssue) {
+                // Show permission help panel
+                permissionHelp.style.display = 'block';
+            } else {
+                // Hide permission help panel
+                permissionHelp.style.display = 'none';
+            }
+        });
+    } catch (error) {
+        console.error("Error checking permissions:", error);
+    }
+}
 
 // Comprehensive download function with diagnostics
 async function downloadWithDiagnostics() {
@@ -99,7 +167,7 @@ async function downloadWithDiagnostics() {
     }
 }
 
-// Popup-based download fallbacks
+// Improved popup-based download with explicit encoding
 async function popupDownloadFallback(text, filename) {
     console.log("🔄 Trying popup fallback methods...");
     
@@ -126,25 +194,25 @@ async function popupDownloadFallback(text, filename) {
     } catch (error) {
         console.error("❌ Redownload API failed:", error);
         
-        // Method 3: Try data URL
+        // Method 3: Try UTF-8 encoded download
         try {
-            console.log("🔄 Trying data URL method...");
-            await dataUrlDownload(text, filename);
-            console.log("✅ Data URL download worked");
+            console.log("🔄 Trying UTF-8 encoded download method...");
+            await utf8EncodedDownload(text, filename);
+            console.log("✅ UTF-8 encoded download worked");
             showNotification('Скачивание файла начато');
             return;
-        } catch (dataUrlError) {
-            console.error("❌ Data URL method failed:", dataUrlError);
+        } catch (encodedError) {
+            console.error("❌ UTF-8 encoded method failed:", encodedError);
             
-            // Method 4: Try Blob URL
+            // Method 4: Try direct text file download
             try {
-                console.log("🔄 Trying Blob URL method...");
-                await blobUrlDownload(text, filename);
-                console.log("✅ Blob URL download worked");
+                console.log("🔄 Trying direct text file method...");
+                await directTextFileDownload(text, filename);
+                console.log("✅ Direct text file download worked");
                 showNotification('Скачивание файла начато');
                 return;
-            } catch (blobError) {
-                console.error("❌ Blob URL method failed:", blobError);
+            } catch (directError) {
+                console.error("❌ Direct text file method failed:", directError);
                 
                 // Method 5: Offer copy to clipboard instead as last resort
                 console.log("🔄 All download methods failed, offering copy...");
@@ -160,39 +228,22 @@ async function popupDownloadFallback(text, filename) {
     }
 }
 
-// Data URL download method
-function dataUrlDownload(text, filename) {
+// UTF-8 encoded download method
+function utf8EncodedDownload(text, filename) {
     return new Promise((resolve, reject) => {
         try {
-            // Use data URL approach (works in most browsers)
-            const dataUrl = 'data:text/plain;charset=utf-8,' + encodeURIComponent(text);
+            console.log("📝 Creating UTF-8 encoded download...");
             
-            // Create link and click it
-            const a = document.createElement('a');
-            a.href = dataUrl;
-            a.download = filename;
-            a.style.display = 'none';
+            // Create TextEncoder for proper UTF-8 handling
+            const encoder = new TextEncoder();
+            const encodedData = encoder.encode(text);
             
-            document.body.appendChild(a);
-            a.click();
+            // Create blob with proper encoding
+            const blob = new Blob([encodedData], { 
+                type: 'text/plain;charset=utf-8' 
+            });
             
-            // Clean up
-            setTimeout(() => {
-                document.body.removeChild(a);
-                resolve(true);
-            }, 100);
-        } catch (error) {
-            reject(error);
-        }
-    });
-}
-
-// Blob URL download method
-function blobUrlDownload(text, filename) {
-    return new Promise((resolve, reject) => {
-        try {
-            // Use Blob approach
-            const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+            // Create URL
             const url = URL.createObjectURL(blob);
             
             // Create link and click it
@@ -210,6 +261,68 @@ function blobUrlDownload(text, filename) {
                 URL.revokeObjectURL(url);
                 resolve(true);
             }, 100);
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+
+// Direct text file download method with verification
+function directTextFileDownload(text, filename) {
+    return new Promise((resolve, reject) => {
+        try {
+            console.log("📄 Creating direct text file download...");
+            
+            // Normalize line endings
+            const normalizedText = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+            
+            // Create blob with BOM for UTF-8
+            const BOM = new Uint8Array([0xEF, 0xBB, 0xBF]);
+            const textEncoder = new TextEncoder();
+            const encodedText = textEncoder.encode(normalizedText);
+            
+            // Combine BOM and text
+            const combinedArray = new Uint8Array(BOM.length + encodedText.length);
+            combinedArray.set(BOM);
+            combinedArray.set(encodedText, BOM.length);
+            
+            // Create blob from combined array
+            const blob = new Blob([combinedArray], { 
+                type: 'text/plain;charset=utf-8' 
+            });
+            
+            // Verify content
+            const reader = new FileReader();
+            reader.onload = function() {
+                const content = reader.result;
+                console.log(`✓ Verified text content (${content.length} chars)`);
+                
+                // Create URL
+                const url = URL.createObjectURL(blob);
+                
+                // Create link and click it
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                a.style.display = 'none';
+                
+                document.body.appendChild(a);
+                a.click();
+                
+                // Clean up
+                setTimeout(() => {
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                    resolve(true);
+                }, 100);
+            };
+            
+            reader.onerror = function(e) {
+                reject(new Error("Failed to verify text content: " + e));
+            };
+            
+            // Start reading to verify
+            reader.readAsText(blob);
         } catch (error) {
             reject(error);
         }
@@ -521,26 +634,15 @@ function manualDownload() {
         }
         
         try {
-            // Create blob and download link
-            const blob = new Blob([result.transcription.text], { type: 'text/plain' });
-            const url = URL.createObjectURL(blob);
-            
-            // Create download link
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = result.transcription.filename;
-            a.style.display = 'none';
-            
-            // Add to document, click, and remove
-            document.body.appendChild(a);
-            a.click();
-            
-            // Clean up
-            setTimeout(() => {
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
-                showNotification('Скачивание начато');
-            }, 100);
+            // Use direct UTF-8 encoded download
+            directTextFileDownload(result.transcription.text, result.transcription.filename)
+                .then(() => {
+                    showNotification('Скачивание начато');
+                })
+                .catch((error) => {
+                    console.error('Ошибка прямого скачивания:', error);
+                    showNotification('Ошибка скачивания: ' + error.message);
+                });
         } catch (error) {
             console.error('Ошибка скачивания:', error);
             showNotification('Ошибка скачивания: ' + error.message);
@@ -551,6 +653,31 @@ function manualDownload() {
 // Initialize popup UI
 document.addEventListener("DOMContentLoaded", async () => {
     console.log("📱 Popup UI initialized");
+    
+    // Add permission styles
+    const permissionStyles = `
+    .permission-help {
+        background-color: #FFF3E0;
+        border-left: 4px solid #FF9800;
+        border-radius: 4px;
+        padding: 12px;
+        margin-bottom: 16px;
+    }
+
+    .permission-warning {
+        margin-bottom: 10px;
+    }
+
+    .permission-warning p {
+        margin: 4px 0;
+    }
+    `;
+    
+    const style = document.createElement('style');
+    style.textContent = permissionStyles;
+    document.head.appendChild(style);
+    
+    // Add improved copy button
     addImprovedCopyButton();
     
     // Check if we're on a Google Meet page
@@ -559,11 +686,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     
     // Update UI based on current tab
     updateUIState(isGoogleMeet);
+    
+    // Check for permissions
+    if (isGoogleMeet) {
+        checkPermissions();
+    }
 
+    // Set up preview functionality
     setupPreviewFunctionality();
     
     // Add an alternative download method
-    const downloadBtn = document.getElementById('downloadBtn');
     downloadBtn.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         manualDownload();
@@ -590,15 +722,30 @@ document.addEventListener("DOMContentLoaded", async () => {
     loadTranscriptionInfo();
 });
 
-// Start recording button
+// Updated startBtn click handler to check permissions first
 startBtn.addEventListener("click", async () => {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
     
     if (tabs[0]?.url?.includes("meet.google.com")) {
-        chrome.tabs.sendMessage(tabs[0].id, { action: "startRecording" }, (response) => {
-            if (response) {
-                console.log(response.status);
-                updateRecordingStatus(true);
+        // First check permissions
+        chrome.tabs.sendMessage(tabs[0].id, { action: "checkPermissions" }, (permissionResponse) => {
+            if (chrome.runtime.lastError) {
+                console.error("Error checking permissions:", chrome.runtime.lastError.message);
+                return;
+            }
+            
+            if (permissionResponse && permissionResponse.hasPermissionIssue) {
+                // Show permission help
+                permissionHelp.style.display = 'block';
+                showNotification("Требуются разрешения для доступа к аудио");
+            } else {
+                // Permissions OK, start recording
+                chrome.tabs.sendMessage(tabs[0].id, { action: "startRecording" }, (response) => {
+                    if (response) {
+                        console.log(response.status);
+                        updateRecordingStatus(true);
+                    }
+                });
             }
         });
     } else {
@@ -665,6 +812,9 @@ function updateUIState(isGoogleMeet) {
         statusIndicator.setAttribute("title", "Не на странице Google Meet");
         
         meetingInfo.innerHTML = "<p>Откройте Google Meet для использования плагина</p>";
+        
+        // Hide permission help when not on Google Meet
+        permissionHelp.style.display = 'none';
     }
 }
 
