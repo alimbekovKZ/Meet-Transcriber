@@ -490,9 +490,9 @@ function addImprovedCopyButton() {
     return copyBtn;
 }
 
-// Улучшенная функция уведомлений
-function showNotification(message, duration = 3000) {
-    // Удаляем существующее уведомление, если оно есть
+// Улучшенная функция показа уведомлений
+function showNotification(message, details = "", duration = 3000) {
+    // Удаляем существующее уведомление
     const existingNotification = document.querySelector('.notification');
     if (existingNotification) {
         existingNotification.remove();
@@ -501,7 +501,30 @@ function showNotification(message, duration = 3000) {
     // Создаем элемент уведомления
     const notification = document.createElement('div');
     notification.className = 'notification';
-    notification.textContent = message;
+    
+    // Добавляем содержимое
+    if (details) {
+        notification.innerHTML = `
+            <div class="notification-title">${message}</div>
+            <div class="notification-details">${details}</div>
+        `;
+    } else {
+        notification.textContent = message;
+    }
+    
+    // Стили для notification-title и notification-details
+    const style = document.createElement('style');
+    style.textContent = `
+        .notification-title {
+            font-weight: 500;
+            margin-bottom: 4px;
+        }
+        .notification-details {
+            font-size: 0.9em;
+            opacity: 0.9;
+        }
+    `;
+    document.head.appendChild(style);
     
     // Добавляем в документ
     document.body.appendChild(notification);
@@ -521,6 +544,12 @@ function showNotification(message, duration = 3000) {
         }, 300); // ждем завершения анимации
     }, duration);
 }
+
+// Инициализация улучшенных обработчиков
+document.addEventListener("DOMContentLoaded", function() {
+    setupStartButtonHandler();
+    console.log("📱 Инициализированы улучшенные обработчики разрешений");
+});
 
 // Show text preview
 function setupPreviewFunctionality() {
@@ -680,27 +709,217 @@ startBtn.addEventListener("click", async () => {
     }
 });
 
-// Проверка разрешений на доступ к медиа
+// Проверка разрешений на доступ к медиа с лучшей диагностикой
 async function checkMediaPermissions() {
     const result = {
         hasMicrophone: false,
-        hasCamera: false
+        hasCamera: false,
+        microphoneState: 'unknown',
+        cameraState: 'unknown'
     };
+    
+    // Проверяем, поддерживается ли API разрешений
+    if (!navigator.permissions || !navigator.permissions.query) {
+        console.log("API разрешений не поддерживается, используем альтернативный метод проверки");
+        // Альтернативный метод - попробуем получить устройства
+        try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const hasMicPermission = devices.some(device => 
+                device.kind === 'audioinput' && device.label);
+            const hasCamPermission = devices.some(device => 
+                device.kind === 'videoinput' && device.label);
+                
+            result.hasMicrophone = hasMicPermission;
+            result.hasCamera = hasCamPermission;
+            result.microphoneState = hasMicPermission ? 'granted' : 'prompt';
+            result.cameraState = hasCamPermission ? 'granted' : 'prompt';
+            
+            return result;
+        } catch (e) {
+            console.error("Не удалось проверить устройства:", e);
+            return result;
+        }
+    }
     
     try {
         // Проверяем разрешение на доступ к микрофону
-        const micPermission = await navigator.permissions.query({ name: 'microphone' });
-        result.hasMicrophone = micPermission.state === 'granted';
+        try {
+            const micPermission = await navigator.permissions.query({ name: 'microphone' });
+            result.hasMicrophone = micPermission.state === 'granted';
+            result.microphoneState = micPermission.state;
+        } catch (e) {
+            console.warn("Не удалось запросить состояние разрешения микрофона:", e);
+        }
         
         // Проверяем разрешение на доступ к камере
-        const cameraPermission = await navigator.permissions.query({ name: 'camera' });
-        result.hasCamera = cameraPermission.state === 'granted';
+        try {
+            const cameraPermission = await navigator.permissions.query({ name: 'camera' });
+            result.hasCamera = cameraPermission.state === 'granted';
+            result.cameraState = cameraPermission.state;
+        } catch (e) {
+            console.warn("Не удалось запросить состояние разрешения камеры:", e);
+        }
         
         return result;
     } catch (error) {
         console.error("Ошибка при проверке разрешений:", error);
         return result;
     }
+}
+
+// Улучшенный обработчик кнопки начала записи
+function setupStartButtonHandler() {
+    const startBtn = document.getElementById("startBtn");
+    if (!startBtn) return;
+    
+    // Очищаем старые обработчики, если они есть
+    const newStartBtn = startBtn.cloneNode(true);
+    startBtn.parentNode.replaceChild(newStartBtn, startBtn);
+    
+    // Добавляем новый улучшенный обработчик
+    newStartBtn.addEventListener("click", handleStartRecording);
+}
+
+// Обработчик начала записи с улучшенной обработкой ошибок
+async function handleStartRecording() {
+    try {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        
+        if (!tabs[0]?.url?.includes("meet.google.com")) {
+            showNotification("Ошибка", "Пожалуйста, откройте Google Meet для записи звонка");
+            return;
+        }
+        
+        // Сначала обновляем UI, чтобы дать мгновенную обратную связь
+        updateRecordingStatus(true);
+        showNotification("Подготовка к записи...");
+        
+        // Проверяем состояние разрешений
+        const permissionStatus = await checkMediaPermissions();
+        console.log("Статус разрешений:", permissionStatus);
+        
+        // Если нет разрешения на микрофон, сначала проверяем состояние
+        if (permissionStatus.microphoneState === 'denied') {
+            // Пользователь заблокировал доступ - показываем инструкции
+            updateRecordingStatus(false); // Возвращаем UI в исходное состояние
+            showMicrophoneBlockedDialog();
+            return;
+        }
+        
+        // Отправляем сообщение в content script для начала записи
+        chrome.tabs.sendMessage(tabs[0].id, { 
+            action: "startRecording",
+            source: "userInitiated" // Важно для разрешения browser.mediaDevices
+        }, (response) => {
+            // Проверяем наличие ошибки взаимодействия с content script
+            if (chrome.runtime.lastError) {
+                console.error("Ошибка связи с content script:", chrome.runtime.lastError);
+                updateRecordingStatus(false);
+                showNotification("Ошибка запуска записи", chrome.runtime.lastError.message);
+                return;
+            }
+            
+            // Обрабатываем ответ
+            if (response) {
+                console.log("Ответ от content script:", response);
+                
+                if (response.error) {
+                    // Обработка ошибки от content script
+                    updateRecordingStatus(false);
+                    
+                    if (response.error === 'userInteractionRequired') {
+                        showNotification("Требуется взаимодействие пользователя", 
+                            "Пожалуйста, запустите запись снова");
+                    } else if (response.error === 'permissionDenied') {
+                        showMicrophoneBlockedDialog();
+                    } else {
+                        showNotification("Ошибка записи", response.error);
+                    }
+                } else {
+                    // Запись успешно запущена
+                    if (response.captureType === "microphone") {
+                        showNotification("Запись началась (микрофон)", 
+                            "Используется микрофон для записи");
+                    } else {
+                        showNotification("Запись началась", 
+                            "Идет запись звука");
+                    }
+                }
+            } else {
+                // Нет ответа - что-то пошло не так
+                updateRecordingStatus(false);
+                showNotification("Нет ответа от страницы Google Meet");
+            }
+        });
+    } catch (error) {
+        console.error("Ошибка при запуске записи:", error);
+        updateRecordingStatus(false);
+        showNotification("Ошибка запуска", error.message);
+    }
+}
+
+// Показываем диалог с инструкциями для случая, когда микрофон заблокирован
+function showMicrophoneBlockedDialog() {
+    // Создаем модальное окно
+    const modal = document.createElement('div');
+    modal.className = 'permission-modal';
+    modal.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: rgba(0,0,0,0.5);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 10000;
+    `;
+    
+    // Содержимое модального окна
+    modal.innerHTML = `
+        <div style="background-color: white; border-radius: 8px; width: 85%; max-width: 400px; padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+            <h3 style="margin-top: 0; color: #ea4335;">Доступ к микрофону заблокирован</h3>
+            
+            <p>Для работы записи необходим доступ к микрофону или системному звуку.</p>
+            
+            <p style="margin-bottom: 5px;"><strong>Как разрешить доступ:</strong></p>
+            <ol style="margin-top: 0; padding-left: 20px;">
+                <li>Нажмите на значок 🔒 или 🔇 в адресной строке</li>
+                <li>Выберите "Разрешения сайта" или "Настройки сайта"</li>
+                <li>Найдите "Микрофон" и установите "Разрешить"</li>
+                <li>Обновите страницу и попробуйте снова</li>
+            </ol>
+            
+            <div style="margin-top: 20px; display: flex; justify-content: flex-end; gap: 8px;">
+                <button id="helpBtn" style="background: none; border: 1px solid #dadce0; padding: 8px 16px; border-radius: 4px; cursor: pointer;">Подробнее</button>
+                <button id="closeModalBtn" style="background-color: #1a73e8; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">Закрыть</button>
+            </div>
+        </div>
+    `;
+    
+    // Добавляем модальное окно на страницу
+    document.body.appendChild(modal);
+    
+    // Обработчики событий
+    document.getElementById('closeModalBtn').addEventListener('click', () => {
+        modal.remove();
+    });
+    
+    document.getElementById('helpBtn').addEventListener('click', () => {
+        // Открываем справочную страницу или настройки Chrome
+        try {
+            chrome.tabs.create({
+                url: 'chrome://settings/content/microphone'
+            });
+        } catch (e) {
+            // В случае ошибки открываем общую страницу помощи
+            chrome.tabs.create({
+                url: 'https://support.google.com/chrome/answer/2693767'
+            });
+        }
+        modal.remove();
+    });
 }
 
 // Показываем диалог для запроса разрешений

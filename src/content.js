@@ -263,7 +263,7 @@ async function startRecording() {
     }
 }
 
-// Получение аудио-потока с кэшированием и улучшенной обработкой разрешений
+// Функция безопасного получения аудиопотока с обработкой ошибок разрешений
 async function getAudioStream() {
     console.log("🎧 Перехват аудио: запрашиваем доступ...");
 
@@ -272,92 +272,303 @@ async function getAudioStream() {
         try {
             console.log("🖥️ Запрашиваем доступ к захвату экрана для системного звука...");
             
-            // Этот API требует пользовательского взаимодействия
+            // В Chrome требуется явное пользовательское взаимодействие для getDisplayMedia
             const displayStream = await navigator.mediaDevices.getDisplayMedia({
                 video: {
-                    cursor: "never",
-                    displaySurface: "browser"
+                    cursor: "never",      // Не показывать курсор
+                    displaySurface: "monitor" // Захват всего экрана для лучшего захвата звука
                 },
-                audio: true,
-                systemAudio: "include" // Явно запрашиваем системный звук
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: false // Отключаем для лучшего качества звука
+                },
+                selfBrowserSurface: "exclude", // Исключаем окно самого браузера
+                systemAudio: "include"         // Явно запрашиваем системный звук
             });
             
-            // Проверяем, что получили аудиотреки
+            // Если успешно получили поток, проверяем наличие аудиотреков
             const audioTracks = displayStream.getAudioTracks();
             if (audioTracks.length > 0) {
                 console.log("✅ Аудиопоток получен через getDisplayMedia:", audioTracks.length, "треков");
                 
                 // Останавливаем видеотреки, нам нужен только звук
-                displayStream.getVideoTracks().forEach(track => track.stop());
+                displayStream.getVideoTracks().forEach(track => {
+                    track.stop();
+                    displayStream.removeTrack(track);
+                });
                 
-                // Выводим настройки для диагностики
-                console.log("🔊 Настройки аудиотрека:", audioTracks[0].getSettings());
+                // Выводим настройки аудиотрека для отладки
+                const trackSettings = audioTracks[0].getSettings();
+                console.log("🔊 Настройки аудиотрека:", JSON.stringify(trackSettings, null, 2));
                 
                 // Создаем новый поток только с аудио
-                const audioStream = new MediaStream(audioTracks);
+                const audioOnlyStream = new MediaStream(audioTracks);
                 
-                // Сохраняем тип аудио для последующего использования
+                // Сохраняем тип источника для информирования пользователя
                 window.audioSource = "system";
                 
-                // Показываем успешное уведомление
-                showNotification(
-                    "Запись звука системы",
-                    "Используется аудио из системы (оптимально для транскрибации)",
-                    "success"
-                );
+                console.log("🔈 Успешно получен поток системного звука");
+                return audioOnlyStream;
+            } else {
+                console.warn("⚠️ getDisplayMedia не предоставил аудиотреки");
                 
-                return audioStream;
+                // Если нет аудиотреков, освобождаем ресурсы
+                displayStream.getTracks().forEach(track => track.stop());
+                throw new Error("Аудиотреки отсутствуют в потоке");
+            }
+        } catch (err) {
+            // Обрабатываем конкретные типы ошибок для предоставления лучшего UX
+            if (err.name === 'NotAllowedError') {
+                console.warn("⚠️ Пользователь отклонил доступ к захвату экрана:", err.message);
+            } else if (err.name === 'NotFoundError') {
+                console.warn("⚠️ Устройство захвата недоступно:", err.message);
+            } else {
+                console.warn("⚠️ Не удалось получить аудио через getDisplayMedia:", err.name, err.message);
             }
             
-            // Если нет аудиотреков, останавливаем все треки
-            displayStream.getTracks().forEach(track => track.stop());
-            console.log("⚠️ getDisplayMedia не предоставил аудиотреки");
-        } catch (err) {
-            console.warn("⚠️ Не удалось получить аудио через getDisplayMedia:", err.message);
-            // Пользователь отказался или произошла ошибка, продолжаем с микрофоном
+            // Продолжаем выполнение и пробуем запасной метод
         }
         
-        // Вариант 2: используем микрофон как запасной вариант
-        console.log("🎤 Пробуем получить аудио с микрофона...");
-        
-        // Показываем уведомление о переключении на микрофон
-        showNotification(
-            "Используем микрофон",
-            "Системный звук недоступен, записываем звук с микрофона",
-            "warning"
-        );
+        // Вариант 2: запасной вариант - используем микрофон
+        console.log("🎤 Запрашиваем доступ к микрофону...");
         
         const micStream = await navigator.mediaDevices.getUserMedia({ 
             audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-                sampleRate: 16000,
-                channelCount: 1  // Моно лучше для распознавания речи
+                echoCancellation: true,     // Подавление эхо
+                noiseSuppression: true,     // Подавление шума
+                autoGainControl: true,      // Автоматическая регулировка громкости
+                sampleRate: 16000,          // Частота дискретизации (оптимально для распознавания речи)
+                channelCount: 1,            // Моно аудио (лучше для распознавания)
+                latency: 0                  // Минимальная задержка
             } 
-        });
+        }).catch(handleUserMediaError);
+        
+        if (!micStream) {
+            throw new Error("Не удалось получить доступ к микрофону");
+        }
         
         const audioTracks = micStream.getAudioTracks();
         if (audioTracks.length > 0) {
-            console.log("🎤 Настройки микрофона:", audioTracks[0].getSettings());
-            window.audioSource = "microphone"; // Сохраняем тип аудио
+            const trackSettings = audioTracks[0].getSettings();
+            console.log("🎤 Настройки микрофона:", JSON.stringify(trackSettings, null, 2));
+            
+            // Сохраняем тип источника для информирования пользователя
+            window.audioSource = "microphone";
+            
+            console.log("✅ Аудиопоток успешно получен с микрофона");
+            return micStream;
+        } else {
+            throw new Error("Аудиотреки отсутствуют в микрофонном потоке");
         }
-        
-        console.log("✅ Аудиопоток получен с микрофона");
-        return micStream;
     } catch (err) {
-        console.error("❌ Не удалось получить аудиопоток:", err);
+        console.error("❌ Критическая ошибка при получении аудиопотока:", err.name, err.message);
         
-        // Показываем уведомление об ошибке
-        showNotification(
-            "Ошибка доступа к аудио", 
-            "Не удалось получить доступ к аудио. Проверьте разрешения браузера.",
-            "error"
-        );
+        // Отправляем информацию об ошибке в background script
+        chrome.runtime.sendMessage({
+            type: "recordingError",
+            error: {
+                name: err.name,
+                message: err.message,
+                timestamp: new Date().toISOString()
+            }
+        });
         
         return null;
     }
 }
+
+// Обработчик ошибок getUserMedia для лучшей диагностики
+function handleUserMediaError(error) {
+    let errorMessage = "Ошибка доступа к микрофону";
+    let errorType = "mic_error";
+    
+    // Диагностика типа ошибки на основе стандартных DOMException
+    switch (error.name) {
+        case 'NotAllowedError':
+            errorMessage = "Доступ к микрофону запрещен пользователем";
+            errorType = "permission_denied";
+            break;
+        case 'NotFoundError':
+            errorMessage = "Микрофон не найден или не подключен";
+            errorType = "device_not_found";
+            break;
+        case 'NotReadableError':
+        case 'AbortError':
+            errorMessage = "Микрофон занят другим приложением";
+            errorType = "device_busy";
+            break;
+        case 'OverconstrainedError':
+            errorMessage = "Не найден микрофон, соответствующий требованиям";
+            errorType = "constraints_error";
+            break;
+        case 'SecurityError':
+            errorMessage = "Доступ запрещен по соображениям безопасности";
+            errorType = "security_error";
+            break;
+        case 'TypeError':
+            errorMessage = "Некорректные параметры запроса";
+            errorType = "type_error";
+            break;
+        default:
+            errorMessage = `Ошибка доступа: ${error.message || error.name}`;
+            errorType = "unknown_error";
+    }
+    
+    // Логируем для диагностики
+    console.error(`❌ ${errorType}: ${errorMessage}`, error);
+    
+    // Отправляем в background script для учета
+    chrome.runtime.sendMessage({
+        type: "permissionError",
+        error: {
+            type: errorType,
+            name: error.name,
+            message: errorMessage,
+            timestamp: new Date().toISOString()
+        }
+    });
+    
+    // Пробрасываем ошибку дальше после логирования
+    throw error;
+}
+
+// Обработчик запроса начала записи с временным интервалом (для предотвращения частых запросов)
+let lastRequestTime = 0;
+let requestTimeoutId = null;
+
+// Ожидание перед повторной попыткой
+function requestWithDebounce(callback, delay = 1000) {
+    const now = Date.now();
+    
+    // Отменяем предыдущий таймаут, если он был
+    if (requestTimeoutId) {
+        clearTimeout(requestTimeoutId);
+    }
+    
+    // Проверяем интервал между запросами
+    if (now - lastRequestTime < delay) {
+        // Если запрос был недавно, откладываем выполнение
+        requestTimeoutId = setTimeout(() => {
+            lastRequestTime = Date.now();
+            callback();
+        }, delay);
+    } else {
+        // Если прошло достаточно времени, выполняем немедленно
+        lastRequestTime = now;
+        callback();
+    }
+}
+
+// Функция для улучшенного обработчика сообщений с защитой от частых запросов
+function setupImprovedMessageHandler() {
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+        if (message.action === "startRecording") {
+            console.log("📩 Получено сообщение 'startRecording'");
+            
+            // Проверяем, инициировано ли пользователем
+            const isUserInitiated = message.source === "userInitiated";
+            
+            if (isUserInitiated) {
+                // Используем защиту от частых запросов
+                requestWithDebounce(() => {
+                    // Запускаем запись аудио с корректной обработкой ошибок
+                    startRecordingWithErrorHandling()
+                        .then(result => {
+                            // Отправляем результат обратно в popup
+                            sendResponse(result);
+                        })
+                        .catch(error => {
+                            console.error("❌ Ошибка при запуске записи:", error);
+                            sendResponse({ 
+                                status: "❌ Ошибка записи",
+                                error: error.message,
+                                errorName: error.name
+                            });
+                        });
+                }, 1000);
+                
+                // Сразу отправляем предварительный ответ
+                sendResponse({ 
+                    status: "⏳ Запуск записи...",
+                    inProgress: true
+                });
+                
+                return true; // Указываем, что будем отвечать асинхронно
+            } else {
+                console.warn("⚠️ Попытка запустить запись без действия пользователя");
+                sendResponse({ 
+                    status: "❌ Запись не запущена",
+                    error: "userInteractionRequired"
+                });
+            }
+        }
+        
+        // Обработка других сообщений
+        // ...
+        
+        return true; // Для поддержки асинхронных ответов
+    });
+}
+
+// Улучшенный запуск записи с корректной обработкой ошибок
+async function startRecordingWithErrorHandling() {
+    try {
+        if (isRecording) {
+            return { 
+                status: "⚠️ Запись уже идет",
+                isRecording: true
+            };
+        }
+        
+        // Получаем аудиопоток с обработкой ошибок
+        const stream = await getAudioStream();
+        
+        if (!stream) {
+            const error = new Error("Не удалось получить аудиопоток");
+            error.name = "AudioStreamError";
+            throw error;
+        }
+        
+        // Сохраняем в глобальную переменную для доступа из других функций
+        cachedAudioStream = stream;
+        
+        // Создаем и настраиваем MediaRecorder
+        // ... (ваш код для создания MediaRecorder)
+        
+        // Начинаем запись
+        isRecording = true;
+        
+        // Возвращаем успешный результат
+        return { 
+            status: "✅ Запись началась!",
+            captureType: window.audioSource || "unknown",
+            isRecording: true
+        };
+    } catch (error) {
+        // Преобразуем ошибку DOMException в более понятное сообщение
+        if (error instanceof DOMException) {
+            switch (error.name) {
+                case 'NotAllowedError':
+                    throw new Error("permissionDenied");
+                case 'NotFoundError':
+                    throw new Error("deviceNotFound");
+                case 'NotReadableError':
+                    throw new Error("deviceBusy");
+                default:
+                    throw new Error(`${error.name}: ${error.message}`);
+            }
+        }
+        
+        // Пробрасываем ошибку дальше
+        throw error;
+    }
+}
+
+// Инициализируем улучшенный обработчик при загрузке страницы
+window.addEventListener('load', () => {
+    setupImprovedMessageHandler();
+});
 
 // Остановка записи (с безопасным освобождением ресурсов)
 async function stopRecording() {
