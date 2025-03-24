@@ -172,7 +172,7 @@ function showPermissionPrompt() {
     }, 30000);
 }
 
-// Запуск записи (обновленная версия с кэшированием потока)
+// Replace the startRecording function in content.js with this improved version
 async function startRecording() {
     console.log("🎙 Запуск записи...");
     
@@ -182,28 +182,26 @@ async function startRecording() {
     }
 
     try {
-        // Используем кэшированный поток, если он есть
-        let stream = cachedAudioStream;
+        // Always try to get a fresh stream instead of using cached one
+        let stream = await getAudioStream();
         
-        // Если нет кэшированного потока, получаем новый
         if (!stream) {
-            stream = await getAudioStream();
-            
-            if (!stream) {
-                console.error("❌ Не удалось получить аудиопоток");
-                return;
-            }
-            
-            // Кэшируем поток для будущего использования
-            cachedAudioStream = stream;
-        } else {
-            console.log("🔄 Используем кэшированный аудиопоток");
+            console.error("❌ Не удалось получить аудиопоток");
+            showNotification(
+                "Ошибка записи", 
+                "Не удалось получить аудиопоток. Проверьте разрешения браузера.",
+                "error"
+            );
+            return;
         }
+        
+        // Cache the successful stream for future use
+        cachedAudioStream = stream;
 
-        // Сбрасываем аудио-чанки
+        // Reset audio chunks
         audioChunks = [];
         
-        // Создаем MediaRecorder с оптимальным форматом
+        // Create MediaRecorder with optimal format
         let options = { mimeType: 'audio/webm;codecs=opus' };
         
         try {
@@ -211,13 +209,13 @@ async function startRecording() {
         } catch (e) {
             console.warn("⚠️ WebM Opus не поддерживается, пробуем другие форматы");
             
-            // Пробуем альтернативные форматы
+            // Try alternative formats
             const mimeTypes = [
                 'audio/webm',
                 'audio/mp4',
                 'audio/ogg',
                 'audio/wav',
-                '' // Пустая строка = браузерный формат по умолчанию
+                '' // Empty string = browser's default format
             ];
             
             for (let type of mimeTypes) {
@@ -234,137 +232,138 @@ async function startRecording() {
         
         if (!mediaRecorder) {
             console.error("❌ Не удалось создать MediaRecorder с поддерживаемым форматом");
+            showNotification(
+                "Ошибка записи", 
+                "Не поддерживаемый формат аудио в вашем браузере.",
+                "error"
+            );
             return;
         }
         
-        // Обработка аудио-данных
+        // Handle audio data
         mediaRecorder.ondataavailable = (event) => {
             if (event.data.size > 0) {
                 audioChunks.push(event.data);
+                console.log(`📊 Получен аудио-чанк: ${event.data.size} байт`);
             }
         };
 
-        // Запускаем запись с меньшими чанками для лучшей надежности
-        mediaRecorder.start(500); // 500ms чанки
+        // Start recording with smaller chunks for better reliability
+        mediaRecorder.start(500); // 500ms chunks
         isRecording = true;
         
         console.log("▶ Запись началась! Формат:", mediaRecorder.mimeType);
         
-        // Показываем индикатор записи
+        // Show recording indicator
         showRecordingIndicator();
         
-        // Отправляем сообщение в фоновый скрипт о начале записи
+        // Send message to background script about starting recording
         chrome.runtime.sendMessage({
             type: "recordingStatus",
             status: "started"
         });
     } catch (error) {
         console.error("❌ Ошибка при запуске записи:", error);
+        showNotification(
+            "Ошибка записи", 
+            `Не удалось запустить запись: ${error.message}`,
+            "error"
+        );
     }
 }
 
-// Функция безопасного получения аудиопотока с обработкой ошибок разрешений
+// And replace the getAudioStream function with this improved version
 async function getAudioStream() {
     console.log("🎧 Перехват аудио: запрашиваем доступ...");
 
     try {
-        // Вариант 1: пытаемся получить аудио через захват экрана (системные звуки)
+        // Method 1: Try to get audio through screen capture (system sounds)
         try {
             console.log("🖥️ Запрашиваем доступ к захвату экрана для системного звука...");
             
-            // В Chrome требуется явное пользовательское взаимодействие для getDisplayMedia
+            // Chrome requires explicit user interaction for getDisplayMedia
             const displayStream = await navigator.mediaDevices.getDisplayMedia({
                 video: {
-                    cursor: "never",      // Не показывать курсор
-                    displaySurface: "monitor" // Захват всего экрана для лучшего захвата звука
+                    cursor: "never",
+                    displaySurface: "monitor"
                 },
                 audio: {
                     echoCancellation: true,
                     noiseSuppression: true,
-                    autoGainControl: false // Отключаем для лучшего качества звука
+                    autoGainControl: false
                 },
-                selfBrowserSurface: "exclude", // Исключаем окно самого браузера
-                systemAudio: "include"         // Явно запрашиваем системный звук
+                selfBrowserSurface: "exclude",
+                systemAudio: "include"
             });
             
-            // Если успешно получили поток, проверяем наличие аудиотреков
+            // Check if we got audio tracks
             const audioTracks = displayStream.getAudioTracks();
             if (audioTracks.length > 0) {
-                console.log("✅ Аудиопоток получен через getDisplayMedia:", audioTracks.length, "треков");
+                console.log("✅ Audio stream obtained via getDisplayMedia:", audioTracks.length, "tracks");
                 
-                // Останавливаем видеотреки, нам нужен только звук
+                // Stop video tracks, we only need audio
                 displayStream.getVideoTracks().forEach(track => {
                     track.stop();
                     displayStream.removeTrack(track);
                 });
                 
-                // Выводим настройки аудиотрека для отладки
-                const trackSettings = audioTracks[0].getSettings();
-                console.log("🔊 Настройки аудиотрека:", JSON.stringify(trackSettings, null, 2));
-                
-                // Создаем новый поток только с аудио
+                // Create a new stream with audio only
                 const audioOnlyStream = new MediaStream(audioTracks);
                 
-                // Сохраняем тип источника для информирования пользователя
+                // Store source type for user information
                 window.audioSource = "system";
                 
-                console.log("🔈 Успешно получен поток системного звука");
+                console.log("🔈 System audio stream successfully obtained");
                 return audioOnlyStream;
             } else {
-                console.warn("⚠️ getDisplayMedia не предоставил аудиотреки");
+                console.warn("⚠️ getDisplayMedia didn't provide audio tracks");
                 
-                // Если нет аудиотреков, освобождаем ресурсы
+                // Release resources if no audio tracks
                 displayStream.getTracks().forEach(track => track.stop());
-                throw new Error("Аудиотреки отсутствуют в потоке");
+                throw new Error("Audio tracks missing in stream");
             }
         } catch (err) {
-            // Обрабатываем конкретные типы ошибок для предоставления лучшего UX
+            // Handle specific error types for better UX
             if (err.name === 'NotAllowedError') {
-                console.warn("⚠️ Пользователь отклонил доступ к захвату экрана:", err.message);
-            } else if (err.name === 'NotFoundError') {
-                console.warn("⚠️ Устройство захвата недоступно:", err.message);
+                console.warn("⚠️ User denied access to screen capture:", err.message);
             } else {
-                console.warn("⚠️ Не удалось получить аудио через getDisplayMedia:", err.name, err.message);
+                console.warn("⚠️ Failed to get audio via getDisplayMedia:", err.name, err.message);
             }
             
-            // Продолжаем выполнение и пробуем запасной метод
+            // Continue execution and try fallback method
         }
         
-        // Вариант 2: запасной вариант - используем микрофон
-        console.log("🎤 Запрашиваем доступ к микрофону...");
+        // Method 2: Fallback - use microphone
+        console.log("🎤 Requesting microphone access...");
         
         const micStream = await navigator.mediaDevices.getUserMedia({ 
             audio: {
-                echoCancellation: true,     // Подавление эхо
-                noiseSuppression: true,     // Подавление шума
-                autoGainControl: true,      // Автоматическая регулировка громкости
-                sampleRate: 16000,          // Частота дискретизации (оптимально для распознавания речи)
-                channelCount: 1,            // Моно аудио (лучше для распознавания)
-                latency: 0                  // Минимальная задержка
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+                sampleRate: 16000,
+                channelCount: 1
             } 
-        }).catch(handleUserMediaError);
+        });
         
         if (!micStream) {
-            throw new Error("Не удалось получить доступ к микрофону");
+            throw new Error("Failed to get microphone access");
         }
         
         const audioTracks = micStream.getAudioTracks();
         if (audioTracks.length > 0) {
-            const trackSettings = audioTracks[0].getSettings();
-            console.log("🎤 Настройки микрофона:", JSON.stringify(trackSettings, null, 2));
-            
-            // Сохраняем тип источника для информирования пользователя
+            // Store source type for user information
             window.audioSource = "microphone";
             
-            console.log("✅ Аудиопоток успешно получен с микрофона");
+            console.log("✅ Audio stream successfully obtained from microphone");
             return micStream;
         } else {
-            throw new Error("Аудиотреки отсутствуют в микрофонном потоке");
+            throw new Error("Audio tracks missing in microphone stream");
         }
     } catch (err) {
-        console.error("❌ Критическая ошибка при получении аудиопотока:", err.name, err.message);
+        console.error("❌ Critical error getting audio stream:", err.name, err.message);
         
-        // Отправляем информацию об ошибке в background script
+        // Send error info to background script
         chrome.runtime.sendMessage({
             type: "recordingError",
             error: {
@@ -570,7 +569,7 @@ window.addEventListener('load', () => {
     setupImprovedMessageHandler();
 });
 
-// Остановка записи (с безопасным освобождением ресурсов)
+// Replace the stopRecording function in content.js
 async function stopRecording() {
     console.log("🛑 Остановка записи...");
 
@@ -579,13 +578,13 @@ async function stopRecording() {
         return;
     }
 
-    // Меняем состояние записи
+    // Change recording state
     isRecording = false;
     
-    // Скрываем индикатор записи
+    // Hide recording indicator
     hideRecordingIndicator();
     
-    // Создаем промис для обработки события остановки
+    // Create promise for stop event handling
     const stopPromise = new Promise((resolve) => {
         mediaRecorder.onstop = async () => {
             try {
@@ -593,74 +592,90 @@ async function stopRecording() {
                     throw new Error("Нет данных аудиозаписи");
                 }
                 
-                console.log(`📊 Собрано ${audioChunks.length} аудио-чанков`);
+                console.log(`📊 Collected ${audioChunks.length} audio chunks`);
                 
-                // Собираем аудио-чанки в блоб
-                const audioBlob = new Blob(audioChunks);
-                console.log("💾 Аудио-файл сформирован:", audioBlob.size, "байт");
+                // Create audio blob
+                const audioBlob = new Blob(audioChunks, {
+                    type: mediaRecorder.mimeType || 'audio/webm'
+                });
+                console.log("💾 Audio file created:", audioBlob.size, "bytes, type:", audioBlob.type);
                 
-                // Преобразуем в ArrayBuffer для отправки
+                // Convert to base64 for sending
                 const reader = new FileReader();
-                reader.readAsArrayBuffer(audioBlob);
+                reader.readAsDataURL(audioBlob);
                 reader.onloadend = function() {
-                    const arrayBuffer = reader.result;
+                    const base64data = reader.result;
                     
-                    // Отправляем аудиоданные в background script
+                    // Show notification about processing
+                    showNotification(
+                        "Обработка аудио", 
+                        "Аудиозапись отправляется на сервер для транскрибации",
+                        "info"
+                    );
+                    
+                    // Send to background script
                     chrome.runtime.sendMessage({
-                        type: "processRawAudio",
-                        audioData: Array.from(new Uint8Array(arrayBuffer)),
+                        type: "sendAudioToWhisper",
+                        file: base64data,
                         meetingName: window.meetingName || "Unknown Meeting"
                     }, (response) => {
                         if (chrome.runtime.lastError) {
-                            console.error("❌ Ошибка отправки сообщения:", chrome.runtime.lastError.message);
+                            console.error("❌ Error sending message:", chrome.runtime.lastError.message);
                             
-                            // Показываем уведомление об ошибке
+                            // Show error notification
                             showNotification(
                                 "Ошибка обработки", 
                                 "Не удалось отправить аудио на обработку: " + chrome.runtime.lastError.message,
                                 "error"
                             );
                         } else {
-                            console.log("✅ Ответ от background.js:", response);
+                            console.log("✅ Response from background.js:", response);
                             
-                            // Показываем уведомление об успешной отправке
-                            showNotification(
-                                "Аудио отправлено", 
-                                "Файл отправлен на транскрибацию",
-                                "success"
-                            );
+                            if (response.status.includes("✅")) {
+                                // Show success notification
+                                showNotification(
+                                    "Транскрибация готова", 
+                                    response.filename ? `Файл: ${response.filename}` : "Файл сохранен",
+                                    "success"
+                                );
+                            } else {
+                                // Show warning/error notification
+                                showNotification(
+                                    "Статус обработки", 
+                                    response.status + (response.error ? `: ${response.error}` : ""),
+                                    response.error ? "error" : "warning"
+                                );
+                            }
                         }
                     });
                 };
             } catch (error) {
-                console.error("❌ Ошибка при обработке аудио:", error);
+                console.error("❌ Error processing audio:", error);
                 
-                // Показываем уведомление об ошибке
+                // Show error notification
                 showNotification(
                     "Ошибка обработки", 
                     "Не удалось обработать аудио: " + error.message,
                     "error"
                 );
             } finally {
-                // НЕ освобождаем треки, чтобы сохранить разрешения
-                // Но останавливаем запись
                 resolve();
             }
         };
     });
     
-    // Останавливаем запись
+    // Stop recording
     mediaRecorder.stop();
     
-    // Отправляем сообщение в background script
+    // Send message to background script
     chrome.runtime.sendMessage({
         type: "recordingStatus",
         status: "stopped"
     });
     
-    // Ждем завершения обработки
+    // Wait for processing to complete
     await stopPromise;
-    console.log("⏹ Запись остановлена и отправлена на обработку");
+    console.log("⏹ Recording stopped and sent for processing");
 }
 
 // Очистка ресурсов при выгрузке страницы

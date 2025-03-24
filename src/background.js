@@ -386,39 +386,73 @@ function validateAndCleanTranscription(text) {
     return finalText;
 }
 
-// Modified saveTranscriptionToFile to ensure content integrity
+// Replace this function in background.js
 async function saveTranscriptionToFile(transcription, filename) {
     console.log("💾 Creating download file:", filename);
     
     // First validate and clean the transcription text
     const validatedText = validateAndCleanTranscription(transcription);
     
-    // Sample the content for debugging (first 100 chars and last 100 chars)
-    const firstPart = validatedText.substring(0, 100);
-    const lastPart = validatedText.substring(validatedText.length - 100);
-    console.log(`📄 Content sample - First part: "${firstPart}..."`);
-    console.log(`📄 Content sample - Last part: "...${lastPart}"`);
-    
     // Reset diagnostics for this download attempt
     downloadDiagnostics.reset();
     
     try {
-        // First always save to storage for recovery - with proper content
+        // First always save to storage for recovery
         await storeTranscriptionData(validatedText, filename);
         downloadDiagnostics.addAttempt("storage", true);
         
-        // Method 1: Direct Downloads API with explicit encoding
+        // Method 1: Direct text file download - most reliable method
         try {
-            console.log("🔄 Trying direct download method...");
-            const downloadId = await directDownload(validatedText, filename);
-            downloadDiagnostics.addAttempt("direct_download", downloadId);
-            console.log("✅ Direct download success, ID:", downloadId);
-            return downloadId;
-        } catch (directError) {
-            downloadDiagnostics.addAttempt("direct_download", false, directError);
-            console.warn("⚠️ Direct download failed, trying fallback method...");
+            console.log("🔄 Trying text file download method...");
+            const blob = new Blob([validatedText], { 
+                type: 'text/plain;charset=utf-8' 
+            });
             
-            // Method 2: Download Helper Tab with text validation
+            const url = URL.createObjectURL(blob);
+            
+            const downloadId = await new Promise((resolve, reject) => {
+                chrome.downloads.download({
+                    url: url,
+                    filename: filename,
+                    saveAs: false
+                }, (downloadId) => {
+                    if (chrome.runtime.lastError) {
+                        URL.revokeObjectURL(url);
+                        reject(new Error(`Download API error: ${chrome.runtime.lastError.message}`));
+                    } else if (!downloadId) {
+                        URL.revokeObjectURL(url);
+                        reject(new Error("Download returned null ID"));
+                    } else {
+                        // Clean up URL after a delay
+                        setTimeout(() => URL.revokeObjectURL(url), 30000);
+                        resolve(downloadId);
+                    }
+                });
+            });
+            
+            downloadDiagnostics.addAttempt("text_file", downloadId);
+            console.log("✅ Text file download success, ID:", downloadId);
+            
+            // Monitor download progress
+            chrome.downloads.onChanged.addListener(function onDownloadChanged(delta) {
+                if (delta.id !== downloadId) return;
+                
+                if (delta.state?.current === 'complete') {
+                    console.log(`✅ Download complete [${downloadId}]`);
+                    chrome.downloads.onChanged.removeListener(onDownloadChanged);
+                    showNotification("Транскрибация завершена", `Файл сохранен: ${filename}`);
+                } else if (delta.error) {
+                    console.error(`❌ Download error [${downloadId}]:`, delta.error.current);
+                    chrome.downloads.onChanged.removeListener(onDownloadChanged);
+                }
+            });
+            
+            return downloadId;
+        } catch (textFileError) {
+            downloadDiagnostics.addAttempt("text_file", false, textFileError);
+            console.warn("⚠️ Text file download failed, trying fallback method...");
+            
+            // Method 2: Try the helper tab method
             try {
                 console.log("🔄 Trying download helper tab method...");
                 const tabId = await createDownloadTab(validatedText, filename);
@@ -427,33 +461,22 @@ async function saveTranscriptionToFile(transcription, filename) {
                 return tabId;
             } catch (tabError) {
                 downloadDiagnostics.addAttempt("helper_tab", false, tabError);
-                console.warn("⚠️ Helper tab download failed, trying text file method...");
+                console.warn("⚠️ Helper tab download failed, trying data URL method...");
                 
-                // Method 3: Create a dedicated text file method with proper encoding
+                // Method 3: Data URL Method
                 try {
-                    console.log("🔄 Trying text file download method...");
-                    const textFileResult = await textFileDownload(validatedText, filename);
-                    downloadDiagnostics.addAttempt("text_file", textFileResult);
-                    console.log("✅ Text file download success");
-                    return textFileResult;
-                } catch (textFileError) {
-                    downloadDiagnostics.addAttempt("text_file", false, textFileError);
+                    console.log("🔄 Trying data URL download method...");
+                    const dataUrlResult = await dataUrlDownload(validatedText, filename);
+                    downloadDiagnostics.addAttempt("data_url", dataUrlResult);
+                    console.log("✅ Data URL download success");
+                    return dataUrlResult;
+                } catch (dataUrlError) {
+                    downloadDiagnostics.addAttempt("data_url", false, dataUrlError);
                     
-                    // Method 4: Data URL Method
-                    try {
-                        console.log("🔄 Trying data URL download method...");
-                        const dataUrlResult = await dataUrlDownload(validatedText, filename);
-                        downloadDiagnostics.addAttempt("data_url", dataUrlResult);
-                        console.log("✅ Data URL download success");
-                        return dataUrlResult;
-                    } catch (dataUrlError) {
-                        downloadDiagnostics.addAttempt("data_url", false, dataUrlError);
-                        
-                        // All methods failed, but we still have the data in storage
-                        const summary = downloadDiagnostics.getSummary();
-                        console.error("❌ All download methods failed:", summary);
-                        throw new Error("All download methods failed. Data is saved and can be accessed from popup.");
-                    }
+                    // All methods failed, but we still have the data in storage
+                    const summary = downloadDiagnostics.getSummary();
+                    console.error("❌ All download methods failed:", summary);
+                    throw new Error("All download methods failed. Data is saved and can be accessed from popup.");
                 }
             }
         }
