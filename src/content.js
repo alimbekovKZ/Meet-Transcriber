@@ -7,7 +7,6 @@ let audioChunks = [];
 let isRecording = false;
 let meetingObserver = null;
 let autoTranscriptionEnabled = true;
-let hasPermissionIssue = false;
 
 // Initialize when page loads
 window.addEventListener('load', () => {
@@ -21,12 +20,6 @@ window.addEventListener('load', () => {
             if (result.hasOwnProperty('autoTranscription')) {
                 autoTranscriptionEnabled = result.autoTranscription;
             }
-        });
-        
-        // Initial permission check
-        checkPermissions().then(result => {
-            hasPermissionIssue = result.hasPermissionIssue;
-            console.log(`🔑 Initial permission check: ${hasPermissionIssue ? 'Issues detected' : 'OK'}`);
         });
     }
 });
@@ -42,7 +35,7 @@ function initializeMeetDetection() {
                                     document.querySelector('[data-meeting-active]') ||
                                     document.querySelectorAll('video').length > 0;
                 
-                if (callStarted && autoTranscriptionEnabled && !isRecording && !hasPermissionIssue) {
+                if (callStarted && autoTranscriptionEnabled && !isRecording) {
                     console.log("🎉 Обнаружено начало звонка в Google Meet");
                     startRecording();
                 }
@@ -68,154 +61,9 @@ function initializeMeetDetection() {
     });
 }
 
-// Check if we have permission issues
-async function checkPermissions() {
-    try {
-        // Test if we can access the microphone
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        
-        // Got permission, stop the stream
-        stream.getTracks().forEach(track => track.stop());
-        
-        // Reset permission issue flag
-        hasPermissionIssue = false;
-        return { hasPermissionIssue: false };
-    } catch (error) {
-        console.warn("⚠️ Permission issue detected:", error.message);
-        
-        // Set permission issue flag
-        hasPermissionIssue = true;
-        return { hasPermissionIssue: true, error: error.message };
-    }
-}
+// Updated recording and file handling in content.js
 
-// Handle permission request
-async function requestPermission() {
-    try {
-        console.log("🔑 Requesting screen capture permission...");
-        
-        // This must be called in response to a user gesture
-        const stream = await navigator.mediaDevices.getDisplayMedia({ 
-            video: true, 
-            audio: true 
-        });
-        
-        // Check if we got audio
-        const hasAudio = stream.getAudioTracks().length > 0;
-        console.log(`✅ Permission granted. Audio tracks: ${hasAudio ? 'Yes' : 'No'}`);
-        
-        // Stop the streams as this was just for permission
-        stream.getTracks().forEach(track => track.stop());
-        
-        // Try to get mic permission too
-        try {
-            const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            micStream.getTracks().forEach(track => track.stop());
-            console.log("✅ Microphone permission granted");
-        } catch (micError) {
-            console.warn("⚠️ Microphone permission denied:", micError.message);
-        }
-        
-        // Update permission status
-        hasPermissionIssue = !hasAudio;
-        
-        return { 
-            success: true, 
-            hasAudio: hasAudio 
-        };
-    } catch (error) {
-        console.error("❌ Permission request failed:", error.message);
-        return { 
-            success: false, 
-            error: error.message 
-        };
-    }
-}
-
-// Improved audio stream acquisition with better permission handling
-async function getAudioStream() {
-    console.log("🎧 Перехват аудио: запрашиваем доступ...");
-
-    try {
-        // First try to capture tab audio using chrome.tabCapture API
-        if (typeof chrome.tabCapture !== 'undefined') {
-            try {
-                console.log("🖥️ Пробуем получить аудио через chrome.tabCapture...");
-                
-                // We need to use chrome.tabCapture in a way that works with Manifest V3
-                // This requires sending a message to the background script
-                const tabCaptureResponse = await new Promise((resolve) => {
-                    chrome.runtime.sendMessage({
-                        type: "requestTabCapture"
-                    }, (response) => {
-                        resolve(response);
-                    });
-                });
-                
-                if (tabCaptureResponse && tabCaptureResponse.stream) {
-                    console.log("✅ Аудиопоток получен через chrome.tabCapture");
-                    hasPermissionIssue = false;
-                    return tabCaptureResponse.stream;
-                } else {
-                    console.warn("⚠️ chrome.tabCapture не вернул поток:", tabCaptureResponse?.error || "Неизвестная ошибка");
-                }
-            } catch (tabCaptureError) {
-                console.warn("⚠️ Ошибка при использовании chrome.tabCapture:", tabCaptureError.message);
-            }
-        }
-        
-        // Try to get desktop audio through screen sharing
-        // This requires explicit user approval every time but works reliably
-        console.log("🖥️ Пробуем получить системный звук через getDisplayMedia...");
-        
-        try {
-            // Request with constraints specific to audio
-            const displayStream = await navigator.mediaDevices.getDisplayMedia({
-                video: {
-                    width: 1,
-                    height: 1,
-                    frameRate: 1  // Minimal video to focus on audio
-                }, 
-                audio: {
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    sampleRate: 16000
-                }
-            });
-            
-            // Check if we have audio tracks
-            const audioTracks = displayStream.getAudioTracks();
-            if (audioTracks.length > 0) {
-                console.log("✅ Аудиопоток получен через getDisplayMedia:", audioTracks.length, "треков");
-                
-                // Stop video tracks as we only need audio
-                displayStream.getVideoTracks().forEach(track => track.stop());
-                
-                // Print audio track settings
-                console.log("🔊 Настройки аудиотрека:", audioTracks[0].getSettings());
-                
-                // Create a new stream with only audio tracks
-                const audioStream = new MediaStream(audioTracks);
-                hasPermissionIssue = false;
-                return audioStream;
-            }
-            
-            // If we got here but no audio tracks, stop the display capture and throw error
-            displayStream.getTracks().forEach(track => track.stop());
-            throw new Error("Получено разрешение на запись экрана, но аудиотреки не найдены");
-        } catch (displayError) {
-            console.warn("⚠️ Не удалось получить аудио через getDisplayMedia:", displayError.message);
-            hasPermissionIssue = true;
-            throw displayError;
-        }
-    } catch (err) {
-        console.error("❌ Не удалось получить аудиопоток:", err);
-        hasPermissionIssue = true;
-        throw err;
-    }
-}
-
-// Updated recording stop function with direct, simpler approach
+// Improved recording stop function with direct, simpler approach
 async function stopRecording() {
     console.log("🛑 Остановка записи...");
 
@@ -296,11 +144,10 @@ function startRecording() {
         return;
     }
 
-    // Get audio stream with improved permission handling
+    // Get audio stream
     getAudioStream().then(stream => {
         if (!stream) {
             console.error("❌ Не удалось получить аудиопоток");
-            hasPermissionIssue = true;
             return;
         }
 
@@ -355,20 +202,75 @@ function startRecording() {
         console.log("▶ Запись началась! Формат:", mediaRecorder.mimeType);
     }).catch(error => {
         console.error("❌ Ошибка при запуске записи:", error);
-        hasPermissionIssue = true;
     });
 }
 
-// Disable auto-transcription for current meeting
-function disableAutoTranscription() {
-    autoTranscriptionEnabled = false;
-    
-    if (isRecording) {
-        stopRecording();
+// Improved audio stream acquisition
+async function getAudioStream() {
+    console.log("🎧 Перехват аудио: запрашиваем доступ...");
+
+    try {
+        // Try to get desktop audio first (works better for meeting audio)
+        try {
+            const displayStream = await navigator.mediaDevices.getDisplayMedia({
+                video: true, 
+                audio: true,
+                // Specify audio constraints for better quality
+                audioConstraints: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    sampleRate: 16000
+                }
+            });
+            
+            // Check if we have audio tracks
+            const audioTracks = displayStream.getAudioTracks();
+            if (audioTracks.length > 0) {
+                console.log("✅ Аудиопоток получен через getDisplayMedia:", audioTracks.length, "треков");
+                
+                // Stop video tracks as we only need audio
+                displayStream.getVideoTracks().forEach(track => track.stop());
+                
+                // Print audio track settings
+                console.log("🔊 Настройки аудиотрека:", audioTracks[0].getSettings());
+                
+                // Create a new stream with only audio tracks
+                const audioStream = new MediaStream(audioTracks);
+                return audioStream;
+            }
+            
+            // If no audio tracks, stop the display capture
+            displayStream.getTracks().forEach(track => track.stop());
+            console.log("⚠️ getDisplayMedia не предоставил аудиотреки");
+        } catch (err) {
+            console.warn("⚠️ Не удалось получить аудио через getDisplayMedia:", err.message);
+        }
+        
+        // Fallback to microphone audio with optimized settings
+        console.log("🎤 Пробуем получить аудио с микрофона...");
+        const micStream = await navigator.mediaDevices.getUserMedia({ 
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+                sampleRate: 16000,
+                channelCount: 1  // Mono is better for speech recognition
+            } 
+        });
+        
+        const audioTracks = micStream.getAudioTracks();
+        if (audioTracks.length > 0) {
+            console.log("🎤 Настройки микрофона:", audioTracks[0].getSettings());
+        }
+        
+        console.log("✅ Аудиопоток получен с микрофона");
+        return micStream;
+    } catch (err) {
+        console.error("❌ Не удалось получить аудиопоток:", err);
+        return null;
     }
-    
-    console.log("🔕 Автоматическая транскрипция отключена для текущей встречи");
 }
+
 
 // Convert WebM to WAV (simplified approach)
 // Proper WebM to WAV conversion function
@@ -598,6 +500,17 @@ function writeString(dataView, offset, string) {
     }
 }
 
+// Disable auto-transcription for current meeting
+function disableAutoTranscription() {
+    autoTranscriptionEnabled = false;
+    
+    if (isRecording) {
+        stopRecording();
+    }
+    
+    console.log("🔕 Автоматическая транскрипция отключена для текущей встречи");
+}
+
 // Listen for messages from popup.js
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === "startRecording") {
@@ -621,14 +534,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             meetingDetected: !!window.meetingName,
             meetingName: window.meetingName || "Unknown Meeting"
         });
-    }
-    else if (message.action === "checkPermissions") {
-        checkPermissions().then(sendResponse);
-        return true; // important for async response
-    }
-    else if (message.action === "requestPermission") {
-        requestPermission().then(sendResponse);
-        return true; // important for async response
     }
     
     return true; // Important for asynchronous sendResponse
