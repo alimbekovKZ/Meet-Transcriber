@@ -890,8 +890,15 @@ function showNotification(title, message, type = "info", duration = 5000) {
     }, duration);
 }
 
-// Слушаем сообщения от popup.js
+// Improved message listeners with ping support
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    // Simple ping to check if content script is available
+    if (message.action === "ping") {
+        console.log("📍 Received ping from popup");
+        sendResponse({ status: "pong", available: true });
+        return true;
+    }
+    
     if (message.action === "startRecording") {
         console.log("📩 Получено сообщение 'startRecording'");
         hasRequestedPermission = true; // Отмечаем, что запрос был инициирован пользователем
@@ -923,3 +930,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     
     return true; // Важно для асинхронного sendResponse
 });
+
+// Also ensure content script is properly initialized when the page loads
+console.log("🔌 Content script initialized for Google Meet");

@@ -545,11 +545,6 @@ function showNotification(message, details = "", duration = 3000) {
     }, duration);
 }
 
-// Инициализация улучшенных обработчиков
-document.addEventListener("DOMContentLoaded", function() {
-    setupStartButtonHandler();
-    console.log("📱 Инициализированы улучшенные обработчики разрешений");
-});
 
 // Show text preview
 function setupPreviewFunctionality() {
@@ -618,40 +613,86 @@ document.addEventListener("DOMContentLoaded", async () => {
     
     // Check if we're on a Google Meet page
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    const isGoogleMeet = tabs[0]?.url?.includes("meet.google.com") || false;
+    const currentTab = tabs[0];
+    const isGoogleMeet = currentTab?.url?.includes("meet.google.com") || false;
     
     // Update UI based on current tab
     updateUIState(isGoogleMeet);
-
     setupPreviewFunctionality();
     
     // Add an alternative download method
     const downloadBtn = document.getElementById('downloadBtn');
-    downloadBtn.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        manualDownload();
-        return false;
-    });
+    if (downloadBtn) {
+        downloadBtn.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            manualDownload();
+            return false;
+        });
+    }
     
     if (isGoogleMeet) {
-        // Get current recording status from content script
-        chrome.tabs.sendMessage(tabs[0].id, { action: "getRecordingStatus" }, (response) => {
-            if (chrome.runtime.lastError) {
-                console.error("Error communicating with content script:", chrome.runtime.lastError.message);
-                updateMeetingInfo(false, false, "");
-                return;
-            }
+        // First check if content script is accessible
+        try {
+            // Try to ping the content script with a timeout
+            await pingContentScript(currentTab.id, 1000);
             
-            if (response) {
-                updateRecordingStatus(response.isRecording);
-                updateMeetingInfo(true, response.meetingDetected, response.meetingName);
-            }
-        });
+            // If we get here, the content script is accessible
+            console.log("✅ Content script is accessible");
+            
+            // Get current recording status from content script
+            chrome.tabs.sendMessage(currentTab.id, { action: "getRecordingStatus" }, (response) => {
+                if (chrome.runtime.lastError) {
+                    console.error("Error communicating with content script:", chrome.runtime.lastError.message);
+                    updateMeetingInfo(false, false, "");
+                    return;
+                }
+                
+                if (response) {
+                    updateRecordingStatus(response.isRecording);
+                    updateMeetingInfo(true, response.meetingDetected, response.meetingName);
+                }
+            });
+        } catch (error) {
+            console.error("Content script not accessible:", error);
+            
+            // Show a more helpful message in the UI
+            meetingInfo.innerHTML = `
+                <p>Не удалось подключиться к странице Google Meet.</p>
+                <p>Попробуйте <a href="#" id="reloadLink">обновить страницу</a> Google Meet.</p>
+            `;
+            
+            // Add reload link handler
+            document.getElementById('reloadLink')?.addEventListener('click', () => {
+                chrome.tabs.reload(currentTab.id);
+                window.close(); // Close the popup
+            });
+        }
     }
     
     // Check for saved transcription
     loadTranscriptionInfo();
 });
+
+// Ping content script with timeout
+function pingContentScript(tabId, timeout = 1000) {
+    return new Promise((resolve, reject) => {
+        // Set timeout to catch unresponsive content script
+        const timeoutId = setTimeout(() => {
+            reject(new Error("Content script ping timed out"));
+        }, timeout);
+        
+        // Try to send a simple ping message
+        chrome.tabs.sendMessage(tabId, { action: "ping" }, (response) => {
+            clearTimeout(timeoutId);
+            
+            if (chrome.runtime.lastError) {
+                reject(new Error(chrome.runtime.lastError.message));
+            } else {
+                resolve(response);
+            }
+        });
+    });
+}
 
 // Улучшенный обработчик кнопки начала записи
 startBtn.addEventListener("click", async () => {

@@ -41,6 +41,7 @@ const downloadDiagnostics = {
 
 // Initialize plugin settings
 chrome.runtime.onInstalled.addListener(() => {
+    console.log("🔌 Extension installed/updated");
     chrome.storage.local.get(['apiKey', 'enableNotifications', 'defaultLanguage'], (result) => {
         if (!result.apiKey) {
             chrome.storage.local.set({
@@ -303,6 +304,43 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         })();
 
         return true; // Важно для асинхронного sendResponse
+    }
+
+    // NEW: Handle content script reinjection requests
+    if (message.type === "reinjectContentScript") {
+        (async () => {
+            try {
+                const tabId = message.tabId;
+                
+                if (!tabId) {
+                    sendResponse({ success: false, error: "No tab ID provided" });
+                    return;
+                }
+                
+                // Check if the tab exists and is a Google Meet tab
+                const tab = await chrome.tabs.get(tabId);
+                if (!tab || !tab.url || !tab.url.includes("meet.google.com")) {
+                    sendResponse({ success: false, error: "Not a Google Meet tab" });
+                    return;
+                }
+                
+                console.log("🔄 Attempting to reinject content script in tab", tabId);
+                
+                // Inject the content script
+                await chrome.scripting.executeScript({
+                    target: { tabId: tabId },
+                    files: ["src/content.js"]
+                });
+                
+                console.log("✅ Content script reinjected successfully");
+                sendResponse({ success: true });
+            } catch (error) {
+                console.error("❌ Failed to reinject content script:", error);
+                sendResponse({ success: false, error: error.message });
+            }
+        })();
+        
+        return true; // For async response
     }
 });
 
