@@ -137,41 +137,38 @@ async function getAudioStream() {
     console.log("🎧 Перехват аудио: запрашиваем доступ...");
 
     try {
-        // First try to get audio directly from the microphone - this has higher success rate
-        console.log("🎤 Пробуем получить аудио с микрофона...");
-        try {
-            const micStream = await navigator.mediaDevices.getUserMedia({ 
-                audio: {
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    autoGainControl: true,
-                    sampleRate: 16000,
-                    channelCount: 1  // Mono is better for speech recognition
-                } 
-            });
-            
-            const audioTracks = micStream.getAudioTracks();
-            if (audioTracks.length > 0) {
-                console.log("🎤 Настройки микрофона:", audioTracks[0].getSettings());
-                console.log("✅ Аудиопоток получен с микрофона");
-                hasPermissionIssue = false;
-                return micStream;
-            } else {
-                console.warn("⚠️ Не удалось получить аудиотреки с микрофона");
+        // First try to capture tab audio using chrome.tabCapture API
+        if (typeof chrome.tabCapture !== 'undefined') {
+            try {
+                console.log("🖥️ Пробуем получить аудио через chrome.tabCapture...");
+                
+                // We need to use chrome.tabCapture in a way that works with Manifest V3
+                // This requires sending a message to the background script
+                const tabCaptureResponse = await new Promise((resolve) => {
+                    chrome.runtime.sendMessage({
+                        type: "requestTabCapture"
+                    }, (response) => {
+                        resolve(response);
+                    });
+                });
+                
+                if (tabCaptureResponse && tabCaptureResponse.stream) {
+                    console.log("✅ Аудиопоток получен через chrome.tabCapture");
+                    hasPermissionIssue = false;
+                    return tabCaptureResponse.stream;
+                } else {
+                    console.warn("⚠️ chrome.tabCapture не вернул поток:", tabCaptureResponse?.error || "Неизвестная ошибка");
+                }
+            } catch (tabCaptureError) {
+                console.warn("⚠️ Ошибка при использовании chrome.tabCapture:", tabCaptureError.message);
             }
-        } catch (micError) {
-            console.warn("⚠️ Ошибка доступа к микрофону:", micError.message);
-            // Continue to screen capture attempt
         }
         
         // Try to get desktop audio through screen sharing
-        // This requires explicit user approval every time
-        console.log("🖥️ Пробуем получить системный звук...");
+        // This requires explicit user approval every time but works reliably
+        console.log("🖥️ Пробуем получить системный звук через getDisplayMedia...");
         
         try {
-            // Chrome requires that getDisplayMedia() is called in response to a user gesture
-            // We'll provide UI and guidance for this in the popup
-            
             // Request with constraints specific to audio
             const displayStream = await navigator.mediaDevices.getDisplayMedia({
                 video: {
@@ -211,35 +208,7 @@ async function getAudioStream() {
             hasPermissionIssue = true;
             throw displayError;
         }
-        
     } catch (err) {
-        // Handle the permission denied error specifically
-        if (err.name === 'NotAllowedError' || err.message.includes('Permission denied')) {
-            console.warn("⚠️ Отказано в доступе: пользователь не дал разрешения на запись аудио");
-            hasPermissionIssue = true;
-            
-            // Try one more attempt with just system permissions (no user prompt)
-            try {
-                console.log("🔄 Пробуем получить аудио через системные разрешения...");
-                const fallbackStream = await navigator.mediaDevices.getUserMedia({ 
-                    audio: {
-                        suppressLocalAudioPlayback: true, // Try to capture system audio
-                        echoCancellation: false,
-                        noiseSuppression: false,
-                        autoGainControl: false
-                    } 
-                });
-                
-                console.log("✅ Получен запасной аудиопоток");
-                hasPermissionIssue = false;
-                return fallbackStream;
-            } catch (fallbackError) {
-                console.error("❌ Все попытки получения аудио не удались:", fallbackError);
-                hasPermissionIssue = true;
-                throw new Error("Расширению требуется разрешение на доступ к аудио для транскрибации");
-            }
-        }
-        
         console.error("❌ Не удалось получить аудиопоток:", err);
         hasPermissionIssue = true;
         throw err;
