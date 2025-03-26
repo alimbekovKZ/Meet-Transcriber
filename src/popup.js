@@ -609,6 +609,10 @@ function manualDownload() {
 // Initialize popup UI
 document.addEventListener("DOMContentLoaded", async () => {
     console.log("📱 Popup UI initialized");
+    
+    // Add chunk styles - ADD THIS LINE HERE
+    addChunkStyles();
+
     addImprovedCopyButton();
     
     // Check if we're on a Google Meet page
@@ -1187,7 +1191,7 @@ function formatDate(dateString) {
 
 // Load and display transcription info
 function loadTranscriptionInfo() {
-    chrome.storage.local.get(['transcription'], (result) => {
+    chrome.storage.local.get(['transcription', 'transcriptionChunks'], (result) => {
         if (result.transcription) {
             // Show transcription info
             noTranscription.style.display = 'none';
@@ -1197,12 +1201,33 @@ function loadTranscriptionInfo() {
             transcriptionFilename.textContent = result.transcription.filename;
             transcriptionTime.textContent = formatDate(result.transcription.timestamp);
             
+            // Check if this is a chunk
+            if (result.transcription.isChunk) {
+                // Show chunk indicator
+                const chunkIndicator = document.createElement('div');
+                chunkIndicator.className = 'chunk-indicator';
+                chunkIndicator.innerHTML = `
+                    <span class="badge">Часть ${result.transcription.chunkNumber}</span>
+                    <span class="chunk-info">Идет запись длинного звонка</span>
+                `;
+                
+                // Add to the transcription info section
+                const infoElement = document.querySelector('.transcription-info');
+                if (infoElement) {
+                    // Insert after filename
+                    infoElement.insertBefore(chunkIndicator, transcriptionTime.parentNode);
+                }
+            }
+            
             // Enable download buttons
             downloadBtn.disabled = false;
             openFolderBtn.disabled = false;
             
             downloadBtn.classList.remove('disabled');
             openFolderBtn.classList.remove('disabled');
+            
+            // Set up preview content
+            setupPreviewSection(result.transcription);
         } else {
             // No transcription available
             noTranscription.style.display = 'block';
@@ -1215,5 +1240,230 @@ function loadTranscriptionInfo() {
             downloadBtn.classList.add('disabled');
             openFolderBtn.classList.add('disabled');
         }
+        
+        // Check for multiple chunks
+        if (result.transcriptionChunks && Object.keys(result.transcriptionChunks).length > 0) {
+            // Create chunks summary
+            addChunksSummary(result.transcriptionChunks);
+        }
     });
+}
+
+// Add function to set up the preview section with better handling for long text
+function setupPreviewSection(transcription) {
+    const previewSection = document.getElementById('previewSection');
+    const togglePreviewBtn = document.getElementById('togglePreviewBtn');
+    const previewContent = document.getElementById('previewContent');
+    const previewText = document.getElementById('previewText');
+    
+    if (!previewSection || !togglePreviewBtn || !previewContent || !previewText) {
+        return;
+    }
+    
+    if (transcription && transcription.text) {
+        // Show preview section
+        previewSection.style.display = 'block';
+        
+        // Add toggle functionality
+        togglePreviewBtn.addEventListener('click', () => {
+            if (previewContent.style.display === 'none') {
+                // Show preview and populate text
+                previewContent.style.display = 'block';
+                
+                // For long transcriptions, only show the beginning
+                const maxPreviewLength = 1000; // Characters
+                const textToShow = transcription.text.length > maxPreviewLength 
+                    ? transcription.text.substring(0, maxPreviewLength) + '...'
+                    : transcription.text;
+                
+                previewText.textContent = textToShow;
+                togglePreviewBtn.textContent = 'Скрыть текст';
+                
+                // For very long transcriptions, add a note
+                if (transcription.text.length > 10000) {
+                    const noteElement = document.createElement('div');
+                    noteElement.className = 'preview-note';
+                    noteElement.textContent = 'Показана только часть текста. Полный текст доступен в скачанном файле.';
+                    previewContent.appendChild(noteElement);
+                }
+            } else {
+                // Hide preview
+                previewContent.style.display = 'none';
+                togglePreviewBtn.textContent = 'Показать текст';
+            }
+        });
+    } else {
+        // No transcription, hide preview section
+        previewSection.style.display = 'none';
+    }
+}
+
+// Add function to display a summary of chunks
+function addChunksSummary(chunks) {
+    // Check if there's an existing summary to remove
+    const existingSummary = document.getElementById('chunksOverview');
+    if (existingSummary) {
+        existingSummary.remove();
+    }
+    
+    // Create a container for chunk information
+    const chunksOverview = document.createElement('div');
+    chunksOverview.id = 'chunksOverview';
+    chunksOverview.className = 'chunks-overview';
+    
+    // Get the keys (meeting sessions)
+    const meetings = Object.keys(chunks);
+    
+    if (meetings.length === 0) {
+        return;
+    }
+    
+    // Create content
+    chunksOverview.innerHTML = `
+        <h3>Обработка длинного звонка</h3>
+        <div class="chunks-progress">
+            <div class="progress-info">
+                <span class="progress-label">Записано частей: ${getTotalChunksCount(chunks)}</span>
+                <div class="progress-indicator"></div>
+            </div>
+        </div>
+        <div class="chunk-actions">
+            <button id="combineChunksBtn" class="btn secondary">Объединить части</button>
+        </div>
+    `;
+    
+    // Insert into the transcription section
+    const transcriptionSection = document.getElementById('transcriptionSection');
+    if (transcriptionSection) {
+        transcriptionSection.appendChild(chunksOverview);
+    }
+    
+    // Add event listener for combining chunks
+    document.getElementById('combineChunksBtn').addEventListener('click', () => {
+        // Send message to background script to combine chunks
+        chrome.runtime.sendMessage({
+            type: "combineChunks",
+            meetingKey: meetings[0] // Just use the first meeting for now
+        }, (response) => {
+            if (chrome.runtime.lastError) {
+                showNotification("Ошибка", "Не удалось объединить части: " + chrome.runtime.lastError.message);
+            } else if (response && response.success) {
+                showNotification("Успешно", "Части транскрипции объединены");
+                
+                // Reload transcription info
+                loadTranscriptionInfo();
+            } else {
+                showNotification("Ошибка", response?.error || "Не удалось объединить части");
+            }
+        });
+    });
+}
+
+// Helper function to count total chunks
+function getTotalChunksCount(chunks) {
+    let totalChunks = 0;
+    
+    for (const meetingKey in chunks) {
+        if (chunks.hasOwnProperty(meetingKey)) {
+            totalChunks += chunks[meetingKey].length;
+        }
+    }
+    
+    return totalChunks;
+}
+
+// Add these styles to your styles.css file (just add to the DOM for now)
+function addChunkStyles() {
+    const style = document.createElement('style');
+    style.textContent = `
+        .chunk-indicator {
+            display: flex;
+            align-items: center;
+            margin: 8px 0;
+        }
+        
+        .badge {
+            background-color: #1a73e8;
+            color: white;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 12px;
+            margin-right: 8px;
+        }
+        
+        .chunk-info {
+            font-size: 12px;
+            color: #5f6368;
+        }
+        
+        .chunks-overview {
+            margin-top: 16px;
+            padding: 12px;
+            background-color: #e8f0fe;
+            border-radius: 4px;
+        }
+        
+        .chunks-overview h3 {
+            margin: 0 0 8px 0;
+            font-size: 14px;
+            color: #1a73e8;
+        }
+        
+        .chunks-progress {
+            margin-bottom: 12px;
+        }
+        
+        .progress-info {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        
+        .progress-label {
+            font-size: 12px;
+            color: #5f6368;
+        }
+        
+        .progress-indicator {
+            height: 4px;
+            background-color: #e0e0e0;
+            border-radius: 2px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .progress-indicator::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            height: 100%;
+            width: 100%;
+            background-color: #1a73e8;
+            animation: progress 2s ease-in-out infinite;
+            transform-origin: left;
+        }
+        
+        @keyframes progress {
+            0% { transform: scaleX(0); }
+            50% { transform: scaleX(0.5); }
+            100% { transform: scaleX(0); }
+        }
+        
+        .chunk-actions {
+            display: flex;
+            justify-content: center;
+        }
+        
+        .preview-note {
+            font-style: italic;
+            color: #5f6368;
+            font-size: 11px;
+            margin-top: 8px;
+            border-top: 1px dashed #e0e0e0;
+            padding-top: 8px;
+        }
+    `;
+    
+    document.head.appendChild(style);
 }

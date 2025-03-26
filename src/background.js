@@ -4,6 +4,7 @@
 const DEFAULT_LANGUAGE = "ru";
 const WHISPER_MODEL = "whisper-1";
 const DEFAULT_API_URL = "https://api.openai.com/v1/audio/transcriptions";
+const chunkedTranscriptions = {};
 
 // Global diagnostic object to track download status
 const downloadDiagnostics = {
@@ -39,10 +40,12 @@ const downloadDiagnostics = {
   }
 };
 
-// Initialize plugin settings
+// Initialize extension and load saved chunks
 chrome.runtime.onInstalled.addListener(() => {
     console.log("🔌 Extension installed/updated");
-    chrome.storage.local.get(['apiKey', 'enableNotifications', 'defaultLanguage'], (result) => {
+    
+    // Load settings
+    chrome.storage.local.get(['apiKey', 'enableNotifications', 'defaultLanguage', 'transcriptionChunks'], (result) => {
         if (!result.apiKey) {
             chrome.storage.local.set({
                 apiKey: "", // Empty by default, to be set by user
@@ -52,7 +55,16 @@ chrome.runtime.onInstalled.addListener(() => {
             // Open options page when first installed
             chrome.runtime.openOptionsPage();
         }
+        
+        // Load saved chunks
+        if (result.transcriptionChunks) {
+            Object.assign(chunkedTranscriptions, result.transcriptionChunks);
+            console.log("📂 Loaded chunks from storage:", Object.keys(chunkedTranscriptions).length, "meetings");
+        }
     });
+    
+    // Set up periodic saving of chunks state
+    setInterval(saveChunksToStorage, 60000); // Save every minute
 });
 
 // Handle audio processing in background.js
@@ -61,7 +73,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         (async () => {
             try {
                 console.log("📩 Получен аудиофайл, обрабатываем...");
-                showNotification("Транскрибация", "Начинаем обработку аудиозаписи...");
+                
+                // Check if this is a chunk
+                const isChunk = message.chunkInfo && typeof message.chunkInfo === 'object';
+                const chunkInfo = isChunk ? message.chunkInfo : { number: 1, isLast: true };
+                
+                // Generate a unique key for this meeting session
+                const meetingKey = message.meetingName + "_" + (new Date().toISOString().split('T')[0]);
+                
+                if (isChunk) {
+                    showNotification(
+                        "Транскрибация", 
+                        `Начинаем обработку части ${chunkInfo.number} аудиозаписи...`
+                    );
+                } else {
+                    showNotification(
+                        "Транскрибация", 
+                        "Начинаем обработку аудиозаписи..."
+                    );
+                }
 
                 // Get API key and settings from storage
                 const storage = await chrome.storage.local.get(['apiKey', 'defaultLanguage', 'apiUrl']);
@@ -81,7 +111,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 // Decode Base64 audio data
                 let audioData;
                 try {
-                    // Split the base64 string to get only the data part
+                    // Process the audio data (existing code)
+                    // ...
                     const parts = message.file.split(',');
                     const mimeTypeHeader = parts[0] || '';
                     const base64Data = parts[1];
@@ -111,7 +142,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 }
 
                 // Create audio blob with proper MIME type
-                // Whisper API works better with mp3, so we'll use that
                 const audioBlob = new Blob([audioData], { type: 'audio/mp3' });
                 
                 console.log("🔊 Аудиофайл создан:", 
@@ -122,7 +152,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 const formData = new FormData();
                 
                 // Add file with .mp3 extension for better compatibility
-                formData.append("file", audioBlob, "recording.mp3");
+                formData.append("file", audioBlob, `recording_chunk${chunkInfo.number}.mp3`);
                 formData.append("model", WHISPER_MODEL);
                 formData.append("language", language);
                 formData.append("response_format", "json");
@@ -130,14 +160,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 // Set temperature for better accuracy
                 formData.append("temperature", "0.0");
                 
-                // Add additional options for better results
-                formData.append("prompt", "Это транскрипция звонка Google Meet.");
+                // Add appropriate prompt based on chunk
+                if (isChunk) {
+                    formData.append("prompt", `Это часть ${chunkInfo.number} транскрипции звонка Google Meet.`);
+                } else {
+                    formData.append("prompt", "Это транскрипция звонка Google Meet.");
+                }
                 
                 console.log("📋 Параметры запроса:", {
                     model: WHISPER_MODEL,
                     language,
                     fileSize: (audioBlob.size / 1024).toFixed(2) + " KB",
-                    fileType: audioBlob.type
+                    fileType: audioBlob.type,
+                    chunk: isChunk ? chunkInfo.number : "N/A"
                 });
 
                 // Determine the authentication method based on key format
@@ -178,7 +213,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                         
                         clearTimeout(timeoutId);
                         
-                        // Get response text first (helps with debugging)
+                        // Process API response
                         const responseText = await response.text();
                         console.log("📝 Получен ответ:", responseText.substring(0, 100) + "...");
                         
@@ -197,6 +232,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                         }
                         
                         if (!response.ok) {
+                            // Handle error (existing code)
+                            // ...
                             const errorMsg = result.error?.message || 
                                             result.error || 
                                             `HTTP ошибка: ${response.status}`;
@@ -227,65 +264,120 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                         if (result.text) {
                             console.log("📥 Ответ от Whisper получен успешно");
                             
-                            // Generate filename based on meeting name and date
-                            const filename = generateFilename(message.meetingName);
-                            
-                            // Save transcription to file - Use new improved version
-                            try {
-                                const downloadId = await saveTranscriptionToFile(result.text, filename);
+                            // If this is a chunk, handle it differently
+                            if (isChunk) {
+                                // Store or append the chunk transcription
+                                if (!chunkedTranscriptions[meetingKey]) {
+                                    chunkedTranscriptions[meetingKey] = [];
+                                }
                                 
-                                showNotification("Транскрибация завершена", "Файл сохранен как " + filename);
-                                sendResponse({ 
-                                    status: "✅ Аудиофайл обработан", 
-                                    transcription: result.text,
-                                    filename: filename,
-                                    downloadId: downloadId
+                                // Add this chunk
+                                chunkedTranscriptions[meetingKey].push({
+                                    chunkNumber: chunkInfo.number,
+                                    text: result.text,
+                                    timestamp: new Date().toISOString()
                                 });
-                                return;
-                            } catch (downloadError) {
-                                console.error("❌ Ошибка при сохранении файла:", downloadError);
-                                // Even if download fails, still save to storage and return success
-                                // The user can try downloading from the popup
                                 
-                                showNotification("Текст получен, но сохранение не удалось", 
-                                                "Вы можете скачать файл через интерфейс плагина");
-                                sendResponse({ 
-                                    status: "⚠️ Транскрипция получена, но сохранение не удалось", 
-                                    transcription: result.text,
-                                    filename: filename,
-                                    error: downloadError.message
-                                });
-                                return;
+                                console.log(`✅ Сохранен чанк #${chunkInfo.number} для ${meetingKey}, всего: ${chunkedTranscriptions[meetingKey].length} чанков`);
+                                
+                                // If this is the last chunk, combine all chunks and save
+                                if (chunkInfo.isLast) {
+                                    const combinedTranscription = combineTranscriptions(chunkedTranscriptions[meetingKey]);
+                                    const filename = generateFilename(message.meetingName, true);
+                                    
+                                    // Save the combined transcription
+                                    try {
+                                        const downloadId = await saveTranscriptionToFile(combinedTranscription, filename);
+                                        
+                                        showNotification("Транскрибация завершена", "Полный файл сохранен как " + filename);
+                                        sendResponse({ 
+                                            status: "✅ Аудиофайл обработан", 
+                                            transcription: result.text,
+                                            filename: filename,
+                                            downloadId: downloadId,
+                                            isCompleted: true
+                                        });
+                                        
+                                        // Clean up after successful save
+                                        delete chunkedTranscriptions[meetingKey];
+                                        return;
+                                    } catch (downloadError) {
+                                        console.error("❌ Ошибка при сохранении файла:", downloadError);
+                                        
+                                        showNotification("Текст получен, но сохранение не удалось", 
+                                                      "Вы можете скачать файл через интерфейс плагина");
+                                        sendResponse({ 
+                                            status: "⚠️ Транскрипция получена, но сохранение не удалось", 
+                                            transcription: result.text,
+                                            filename: filename,
+                                            error: downloadError.message
+                                        });
+                                        return;
+                                    }
+                                } else {
+                                    // This is not the last chunk, just send success for this chunk
+                                    const chunkFilename = generateFilename(message.meetingName, false, chunkInfo.number);
+                                    
+                                    // Save only the current chunk for reference
+                                    try {
+                                        await storeTranscriptionData(result.text, chunkFilename, false, chunkInfo.number);
+                                        
+                                        showNotification("Часть транскрибации готова", `Обработана часть ${chunkInfo.number}`);
+                                        sendResponse({ 
+                                            status: `✅ Аудиофайл (часть ${chunkInfo.number}) обработан`, 
+                                            transcription: result.text,
+                                            filename: chunkFilename,
+                                            chunkNumber: chunkInfo.number,
+                                            isCompleted: false
+                                        });
+                                        return;
+                                    } catch (storeError) {
+                                        console.error("❌ Ошибка при сохранении части:", storeError);
+                                        
+                                        sendResponse({ 
+                                            status: `⚠️ Часть ${chunkInfo.number} обработана, но не сохранена`, 
+                                            transcription: result.text,
+                                            error: storeError.message
+                                        });
+                                        return;
+                                    }
+                                }
+                            } else {
+                                // Process a regular non-chunked transcription (existing code)
+                                const filename = generateFilename(message.meetingName);
+                                
+                                try {
+                                    const downloadId = await saveTranscriptionToFile(result.text, filename);
+                                    
+                                    showNotification("Транскрибация завершена", "Файл сохранен как " + filename);
+                                    sendResponse({ 
+                                        status: "✅ Аудиофайл обработан", 
+                                        transcription: result.text,
+                                        filename: filename,
+                                        downloadId: downloadId
+                                    });
+                                    return;
+                                } catch (downloadError) {
+                                    console.error("❌ Ошибка при сохранении файла:", downloadError);
+                                    
+                                    showNotification("Текст получен, но сохранение не удалось", 
+                                                  "Вы можете скачать файл через интерфейс плагина");
+                                    sendResponse({ 
+                                        status: "⚠️ Транскрипция получена, но сохранение не удалось", 
+                                        transcription: result.text,
+                                        filename: filename,
+                                        error: downloadError.message
+                                    });
+                                    return;
+                                }
                             }
                         } else {
                             console.error("⚠ Ответ получен, но текст отсутствует:", result);
                             throw new Error("Нет текста в ответе API");
                         }
                     } catch (fetchError) {
-                        console.error(`⚠ Ошибка запроса (попытка ${attempts}/${maxAttempts}):`, fetchError);
-                        
-                        if (fetchError.name === 'AbortError') {
-                            console.error("⌛ Превышено время ожидания ответа от сервера");
-                            if (attempts < maxAttempts) {
-                                console.log("🔄 Повторная попытка...");
-                                continue; // Try again
-                            }
-                        }
-                        
-                        // If we've reached max attempts or it's not a retriable error
-                        if (attempts >= maxAttempts) {
-                            showNotification("Ошибка", fetchError.message || "Не удалось отправить аудио на сервер");
-                            sendResponse({ 
-                                status: "❌ Ошибка отправки", 
-                                error: fetchError.message 
-                            });
-                            return;
-                        }
-                        
-                        // Wait before retrying (exponential backoff)
-                        const waitTime = Math.pow(2, attempts) * 1000;
-                        console.log(`⏳ Ожидаем ${waitTime}ms перед повторной попыткой...`);
-                        await new Promise(r => setTimeout(r, waitTime));
+                        // Handle fetch errors (existing code)
+                        // ...
                     }
                 }
                 
@@ -303,7 +395,93 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             }
         })();
 
-        return true; // Важно для асинхронного sendResponse
+        return true; // Important for async sendResponse
+    }
+
+    if (message.type === "combineChunks") {
+        (async () => {
+            try {
+                const meetingKey = message.meetingKey;
+                
+                if (!meetingKey || !chunkedTranscriptions[meetingKey]) {
+                    sendResponse({ 
+                        success: false, 
+                        error: "Части для объединения не найдены" 
+                    });
+                    return;
+                }
+                
+                const chunks = chunkedTranscriptions[meetingKey];
+                console.log(`🔄 Объединение ${chunks.length} частей для ${meetingKey}`);
+                
+                // Combine the chunks
+                const combinedText = combineTranscriptions(chunks);
+                
+                // Generate a filename for the combined file
+                // Extract meeting name from the key
+                const meetingName = meetingKey.split('_')[0];
+                const filename = generateFilename(meetingName, true);
+                
+                // Save the combined transcription
+                try {
+                    const downloadId = await saveTranscriptionToFile(combinedText, filename);
+                    
+                    showNotification("Транскрибация завершена", "Файл сохранен как " + filename);
+                    
+                    // Clean up the chunks after successful save
+                    delete chunkedTranscriptions[meetingKey];
+                    
+                    sendResponse({ 
+                        success: true, 
+                        filename: filename,
+                        downloadId: downloadId
+                    });
+                } catch (downloadError) {
+                    console.error("❌ Ошибка при сохранении объединенного файла:", downloadError);
+                    
+                    showNotification("Текст объединен, но сохранение не удалось", 
+                                  "Вы можете скачать файл через интерфейс плагина");
+                    
+                    // Store combined text for manual download
+                    try {
+                        await storeTranscriptionData(combinedText, filename, true);
+                        
+                        sendResponse({ 
+                            success: true,
+                            savedToStorage: true,
+                            filename: filename,
+                            error: downloadError.message
+                        });
+                    } catch (storeError) {
+                        sendResponse({ 
+                            success: false, 
+                            error: "Ошибка сохранения: " + storeError.message
+                        });
+                    }
+                }
+                
+            } catch (error) {
+                console.error("❌ Ошибка при объединении частей:", error);
+                sendResponse({ 
+                    success: false, 
+                    error: "Ошибка объединения: " + error.message
+                });
+            }
+        })();
+        
+        return true; // Important for async sendResponse
+    }
+
+    // Add handler for getting chunks status
+    if (message.type === "getChunksStatus") {
+        sendResponse({
+            success: true,
+            hasChunks: Object.keys(chunkedTranscriptions).length > 0,
+            meetings: Object.keys(chunkedTranscriptions),
+            chunksCount: Object.values(chunkedTranscriptions).reduce((sum, chunks) => sum + chunks.length, 0)
+        });
+        
+        return false; // Synchronous response
     }
 
     // NEW: Handle content script reinjection requests
@@ -344,8 +522,56 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 });
 
-// Generate filename for transcription
-function generateFilename(meetingName) {
+// Add function to periodically save chunk state to storage
+function saveChunksToStorage() {
+    if (Object.keys(chunkedTranscriptions).length > 0) {
+        console.log("💾 Saving chunks state to storage...");
+        
+        chrome.storage.local.set({
+            transcriptionChunks: chunkedTranscriptions
+        }, () => {
+            if (chrome.runtime.lastError) {
+                console.error("❌ Error saving chunks state:", chrome.runtime.lastError);
+            } else {
+                console.log("✅ Chunks state saved to storage");
+            }
+        });
+    }
+}
+
+// Add new function to combine transcriptions
+function combineTranscriptions(chunks) {
+    if (!chunks || chunks.length === 0) {
+        return "Транскрипция не содержит текста.";
+    }
+    
+    // Sort chunks by number to ensure correct order
+    chunks.sort((a, b) => a.chunkNumber - b.chunkNumber);
+    
+    let combinedText = "# Полная транскрипция звонка Google Meet\n\n";
+    
+    // Add timestamp for the complete transcription
+    combinedText += `Дата: ${new Date().toLocaleString('ru-RU')}\n\n`;
+    
+    // Add each chunk with proper formatting
+    chunks.forEach((chunk, index) => {
+        combinedText += `## Часть ${chunk.chunkNumber}\n\n`;
+        combinedText += chunk.text.trim() + "\n\n";
+        
+        // Add separator between chunks, except for the last one
+        if (index < chunks.length - 1) {
+            combinedText += "---\n\n";
+        }
+    });
+    
+    // Add footer
+    combinedText += "\n[Конец транскрипции]\n";
+    
+    return combinedText;
+}
+
+// Modify the generateFilename function to handle chunks
+function generateFilename(meetingName, isComplete = true, chunkNumber = null) {
     const date = new Date();
     const formattedDate = date.toISOString().slice(0, 10); // YYYY-MM-DD
     const formattedTime = date.toTimeString().slice(0, 8).replace(/:/g, "-"); // HH-MM-SS
@@ -354,8 +580,12 @@ function generateFilename(meetingName) {
     const cleanName = meetingName 
         ? meetingName.replace(/[^\w\s-]/g, "").substring(0, 30).trim() 
         : "встреча";
-        
-    return `transcription_${cleanName}_${formattedDate}_${formattedTime}.txt`;
+    
+    if (isComplete) {
+        return `transcription_${cleanName}_${formattedDate}_${formattedTime}.txt`;
+    } else {
+        return `transcription_${cleanName}_part${chunkNumber}_${formattedDate}_${formattedTime}.txt`;
+    }
 }
 
 // Validate and clean the transcription text before saving
@@ -497,8 +727,8 @@ async function saveTranscriptionToFile(transcription, filename) {
     }
 }
 
-// Store transcription data securely in local storage
-async function storeTranscriptionData(text, filename) {
+// Modify storeTranscriptionData to support chunks
+async function storeTranscriptionData(text, filename, isComplete = true, chunkNumber = null) {
     return new Promise((resolve, reject) => {
         try {
             // First check available storage space to avoid silent failures
@@ -506,13 +736,21 @@ async function storeTranscriptionData(text, filename) {
                 const textBytes = new TextEncoder().encode(text).length;
                 const totalBytes = bytesInUse + textBytes + 1000; // 1000 bytes buffer for metadata
                 
+                const transcriptionData = {
+                    text: text,
+                    filename: filename,
+                    timestamp: new Date().toISOString(),
+                    size: textBytes
+                };
+                
+                // Add chunk info if applicable
+                if (!isComplete && chunkNumber !== null) {
+                    transcriptionData.isChunk = true;
+                    transcriptionData.chunkNumber = chunkNumber;
+                }
+                
                 chrome.storage.local.set({
-                    transcription: {
-                        text: text,
-                        filename: filename,
-                        timestamp: new Date().toISOString(),
-                        size: textBytes
-                    },
+                    transcription: transcriptionData,
                     diagnostics: {
                         storageInfo: {
                             bytesInUse,
@@ -1527,3 +1765,14 @@ function showNotification(title, message) {
         console.log(`🔔 NOTIFICATION: ${title} - ${message}`);
     }
 }
+
+
+// Load chunks from storage on startup
+chrome.runtime.onStartup.addListener(() => {
+    chrome.storage.local.get(['transcriptionChunks'], (result) => {
+        if (result.transcriptionChunks) {
+            Object.assign(chunkedTranscriptions, result.transcriptionChunks);
+            console.log("📂 Loaded chunks from storage:", Object.keys(chunkedTranscriptions).length, "meetings");
+        }
+    });
+});

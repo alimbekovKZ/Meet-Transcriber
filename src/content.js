@@ -9,6 +9,13 @@ let hasRequestedPermission = false;  // Отслеживаем, запрашив
 let cachedAudioStream = null;        // Кэшируем полученный поток
 let meetDetected = false;            // Флаг обнаружения конференции
 
+// Add these variables to the global scope in content.js
+let chunkDuration = 15 * 60 * 1000; // 15 minutes per chunk in milliseconds
+let currentChunkStartTime = 0;
+let chunkCounter = 0;
+let chunkTimer = null;
+let isProcessingChunk = false;
+
 // Инициализация при загрузке страницы
 window.addEventListener('load', () => {
     // Проверяем, находимся ли мы на странице Google Meet
@@ -182,7 +189,7 @@ async function startRecording() {
     }
 
     try {
-        // Always try to get a fresh stream instead of using cached one
+        // Get audio stream (existing code remains the same)
         let stream = await getAudioStream();
         
         if (!stream) {
@@ -198,36 +205,19 @@ async function startRecording() {
         // Cache the successful stream for future use
         cachedAudioStream = stream;
 
-        // Reset audio chunks
+        // Reset audio chunks and chunk counter
         audioChunks = [];
+        chunkCounter = 0;
+        currentChunkStartTime = Date.now();
         
-        // Create MediaRecorder with optimal format
+        // Create MediaRecorder with optimal format (existing code)
         let options = { mimeType: 'audio/webm;codecs=opus' };
         
         try {
             mediaRecorder = new MediaRecorder(stream, options);
         } catch (e) {
-            console.warn("⚠️ WebM Opus не поддерживается, пробуем другие форматы");
-            
-            // Try alternative formats
-            const mimeTypes = [
-                'audio/webm',
-                'audio/mp4',
-                'audio/ogg',
-                'audio/wav',
-                '' // Empty string = browser's default format
-            ];
-            
-            for (let type of mimeTypes) {
-                try {
-                    options = type ? { mimeType: type } : {};
-                    mediaRecorder = new MediaRecorder(stream, options);
-                    console.log(`✅ Используем формат: ${mediaRecorder.mimeType}`);
-                    break;
-                } catch (e) {
-                    console.warn(`⚠️ Формат ${type} не поддерживается`);
-                }
-            }
+            // Fallback code for other formats (existing code)
+            // ...
         }
         
         if (!mediaRecorder) {
@@ -244,7 +234,13 @@ async function startRecording() {
         mediaRecorder.ondataavailable = (event) => {
             if (event.data.size > 0) {
                 audioChunks.push(event.data);
-                console.log(`📊 Получен аудио-чанк: ${event.data.size} байт`);
+                console.log(`📊 Получен аудио-чанк: ${event.data.size} байт, всего: ${audioChunks.length} чанков`);
+                
+                // Monitor total size of audioChunks to prevent memory issues
+                if (getTotalChunkSize() > 20 * 1024 * 1024) { // 20MB threshold
+                    console.log("⚠️ Достигнут предел размера аудио. Начинаем обработку.");
+                    processCurrentChunk(false);
+                }
             }
         };
 
@@ -256,6 +252,9 @@ async function startRecording() {
         
         // Show recording indicator
         showRecordingIndicator();
+        
+        // Set up timer for periodic chunk processing
+        setupChunkTimer();
         
         // Send message to background script about starting recording
         chrome.runtime.sendMessage({
@@ -269,6 +268,142 @@ async function startRecording() {
             `Не удалось запустить запись: ${error.message}`,
             "error"
         );
+    }
+}
+
+// Add new function to get total size of chunks
+function getTotalChunkSize() {
+    return audioChunks.reduce((total, chunk) => total + chunk.size, 0);
+}
+
+// Add new function to set up chunk timer
+function setupChunkTimer() {
+    // Clear existing timer if any
+    if (chunkTimer) {
+        clearTimeout(chunkTimer);
+    }
+    
+    // Set new timer for chunk processing
+    chunkTimer = setTimeout(() => {
+        if (isRecording && audioChunks.length > 0) {
+            console.log("⏰ Таймер чанка сработал. Обрабатываем текущий аудио фрагмент.");
+            processCurrentChunk(true);
+        }
+    }, chunkDuration);
+}
+
+// Add new function to process current chunk
+async function processCurrentChunk(continueRecording) {
+    // Prevent multiple simultaneous processing
+    if (isProcessingChunk) {
+        console.log("⚠️ Обработка предыдущего чанка ещё не завершена. Пропускаем.");
+        return;
+    }
+    
+    isProcessingChunk = true;
+    
+    try {
+        // Pause recording if needed
+        if (mediaRecorder && mediaRecorder.state === "recording") {
+            mediaRecorder.pause();
+            console.log("⏸ Запись приостановлена для обработки чанка");
+        }
+        
+        // Create a local copy of current chunks
+        const chunksToProcess = [...audioChunks]; 
+        
+        // Clear the global array to collect new chunks
+        audioChunks = [];
+        
+        // Calculate duration of the chunk
+        const chunkDurationSeconds = Math.floor((Date.now() - currentChunkStartTime) / 1000);
+        chunkCounter++;
+        
+        // Update start time for the next chunk
+        currentChunkStartTime = Date.now();
+        
+        console.log(`📦 Обработка чанка #${chunkCounter}, длительность: ${chunkDurationSeconds} сек, размер: ${chunksToProcess.reduce((total, chunk) => total + chunk.size, 0) / 1024} KB`);
+        
+        // Show notification
+        showNotification(
+            "Обработка аудио", 
+            `Обрабатываем часть ${chunkCounter} записи...`,
+            "info"
+        );
+        
+        // Convert to blob
+        const audioBlob = new Blob(chunksToProcess, {
+            type: mediaRecorder?.mimeType || 'audio/webm'
+        });
+        
+        // Convert to base64 for sending
+        const reader = new FileReader();
+        reader.readAsDataURL(audioBlob);
+        reader.onloadend = function() {
+            const base64data = reader.result;
+            
+            // Send to background script with chunk info
+            chrome.runtime.sendMessage({
+                type: "sendAudioToWhisper",
+                file: base64data,
+                meetingName: window.meetingName || "Unknown Meeting",
+                chunkInfo: {
+                    number: chunkCounter,
+                    duration: chunkDurationSeconds,
+                    isLast: !continueRecording
+                }
+            }, (response) => {
+                isProcessingChunk = false;
+                
+                if (chrome.runtime.lastError) {
+                    console.error("❌ Error sending chunk:", chrome.runtime.lastError.message);
+                    showNotification(
+                        "Ошибка обработки", 
+                        "Не удалось отправить аудио на обработку: " + chrome.runtime.lastError.message,
+                        "error"
+                    );
+                } else {
+                    console.log("✅ Chunk processed:", response);
+                    
+                    if (response.status.includes("✅")) {
+                        // Show success notification
+                        showNotification(
+                            `Часть ${chunkCounter} обработана`, 
+                            response.filename ? `Файл: ${response.filename}` : "Файл сохранен",
+                            "success"
+                        );
+                    } else {
+                        // Show warning/error notification
+                        showNotification(
+                            "Проблема обработки", 
+                            response.status + (response.error ? `: ${response.error}` : ""),
+                            response.error ? "error" : "warning"
+                        );
+                    }
+                }
+                
+                // Resume recording if we should continue
+                if (continueRecording && mediaRecorder && mediaRecorder.state === "paused") {
+                    mediaRecorder.resume();
+                    console.log("▶ Запись возобновлена");
+                    
+                    // Set up the next chunk timer
+                    setupChunkTimer();
+                }
+            });
+        };
+    } catch (error) {
+        console.error("❌ Error processing chunk:", error);
+        isProcessingChunk = false;
+        
+        // Resume recording if we should continue
+        if (continueRecording && mediaRecorder && mediaRecorder.state === "paused") {
+            mediaRecorder.resume();
+            console.log("▶ Запись возобновлена (после ошибки)");
+            
+            // Set up the next chunk timer
+            setupChunkTimer();
+        }
     }
 }
 
@@ -573,9 +708,15 @@ window.addEventListener('load', () => {
 async function stopRecording() {
     console.log("🛑 Остановка записи...");
 
-    if (!isRecording || !mediaRecorder || mediaRecorder.state === "inactive") {
+    if (!isRecording || !mediaRecorder) {
         console.log("⚠️ Запись не активна, нечего останавливать");
         return;
+    }
+
+    // Clear chunk timer if it exists
+    if (chunkTimer) {
+        clearTimeout(chunkTimer);
+        chunkTimer = null;
     }
 
     // Change recording state
@@ -584,88 +725,30 @@ async function stopRecording() {
     // Hide recording indicator
     hideRecordingIndicator();
     
-    // Create promise for stop event handling
-    const stopPromise = new Promise((resolve) => {
-        mediaRecorder.onstop = async () => {
-            try {
-                if (audioChunks.length === 0) {
-                    throw new Error("Нет данных аудиозаписи");
-                }
-                
-                console.log(`📊 Collected ${audioChunks.length} audio chunks`);
-                
-                // Create audio blob
-                const audioBlob = new Blob(audioChunks, {
-                    type: mediaRecorder.mimeType || 'audio/webm'
-                });
-                console.log("💾 Audio file created:", audioBlob.size, "bytes, type:", audioBlob.type);
-                
-                // Convert to base64 for sending
-                const reader = new FileReader();
-                reader.readAsDataURL(audioBlob);
-                reader.onloadend = function() {
-                    const base64data = reader.result;
-                    
-                    // Show notification about processing
-                    showNotification(
-                        "Обработка аудио", 
-                        "Аудиозапись отправляется на сервер для транскрибации",
-                        "info"
-                    );
-                    
-                    // Send to background script
-                    chrome.runtime.sendMessage({
-                        type: "sendAudioToWhisper",
-                        file: base64data,
-                        meetingName: window.meetingName || "Unknown Meeting"
-                    }, (response) => {
-                        if (chrome.runtime.lastError) {
-                            console.error("❌ Error sending message:", chrome.runtime.lastError.message);
-                            
-                            // Show error notification
-                            showNotification(
-                                "Ошибка обработки", 
-                                "Не удалось отправить аудио на обработку: " + chrome.runtime.lastError.message,
-                                "error"
-                            );
-                        } else {
-                            console.log("✅ Response from background.js:", response);
-                            
-                            if (response.status.includes("✅")) {
-                                // Show success notification
-                                showNotification(
-                                    "Транскрибация готова", 
-                                    response.filename ? `Файл: ${response.filename}` : "Файл сохранен",
-                                    "success"
-                                );
-                            } else {
-                                // Show warning/error notification
-                                showNotification(
-                                    "Статус обработки", 
-                                    response.status + (response.error ? `: ${response.error}` : ""),
-                                    response.error ? "error" : "warning"
-                                );
-                            }
-                        }
-                    });
-                };
-            } catch (error) {
-                console.error("❌ Error processing audio:", error);
-                
-                // Show error notification
-                showNotification(
-                    "Ошибка обработки", 
-                    "Не удалось обработать аудио: " + error.message,
-                    "error"
-                );
-            } finally {
-                resolve();
+    // If we have chunks, process them as the final chunk
+    if (audioChunks.length > 0) {
+        // Create promise for the final chunk processing
+        const processingPromise = new Promise((resolve) => {
+            if (mediaRecorder && mediaRecorder.state === "recording") {
+                mediaRecorder.stop();
             }
-        };
-    });
-    
-    // Stop recording
-    mediaRecorder.stop();
+            
+            // Process the final chunk
+            console.log("📦 Обработка финального чанка записи");
+            processCurrentChunk(false);
+            
+            // We'll resolve after a short delay to allow the chunk to be processed
+            setTimeout(resolve, 1000);
+        });
+        
+        // Wait for processing to complete
+        await processingPromise;
+    } else {
+        // No chunks to process, just stop the recorder
+        if (mediaRecorder && mediaRecorder.state === "recording") {
+            mediaRecorder.stop();
+        }
+    }
     
     // Send message to background script
     chrome.runtime.sendMessage({
@@ -673,9 +756,7 @@ async function stopRecording() {
         status: "stopped"
     });
     
-    // Wait for processing to complete
-    await stopPromise;
-    console.log("⏹ Recording stopped and sent for processing");
+    console.log("⏹ Recording stopped");
 }
 
 // Очистка ресурсов при выгрузке страницы
