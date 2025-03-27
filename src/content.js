@@ -407,29 +407,41 @@ async function processCurrentChunk(continueRecording) {
     }
 }
 
-// And replace the getAudioStream function with this improved version
+// Improved getAudioStream function with better browser compatibility and fallbacks
 async function getAudioStream() {
     console.log("🎧 Перехват аудио: запрашиваем доступ...");
 
     try {
+        // First try cached stream if available
+        if (cachedAudioStream && cachedAudioStream.active) {
+            console.log("✅ Using previously cached audio stream");
+            return cachedAudioStream;
+        }
+
         // Method 1: Try to get audio through screen capture (system sounds)
         try {
             console.log("🖥️ Запрашиваем доступ к захвату экрана для системного звука...");
             
-            // Chrome requires explicit user interaction for getDisplayMedia
-            const displayStream = await navigator.mediaDevices.getDisplayMedia({
+            // Handle browser differences for getDisplayMedia
+            const displayMediaOptions = {
                 video: {
-                    cursor: "never",
-                    displaySurface: "monitor"
+                    cursor: "never"
                 },
-                audio: {
+                audio: true  // Simplified option that works across browsers
+            };
+            
+            // Add Chrome-specific options if available
+            if (navigator.userAgent.includes('Chrome')) {
+                displayMediaOptions.video.displaySurface = "monitor";
+                displayMediaOptions.audio = {
                     echoCancellation: true,
                     noiseSuppression: true,
                     autoGainControl: false
-                },
-                selfBrowserSurface: "exclude",
-                systemAudio: "include"
-            });
+                };
+                displayMediaOptions.systemAudio = "include";
+            }
+            
+            const displayStream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
             
             // Check if we got audio tracks
             const audioTracks = displayStream.getAudioTracks();
@@ -464,11 +476,9 @@ async function getAudioStream() {
             } else {
                 console.warn("⚠️ Failed to get audio via getDisplayMedia:", err.name, err.message);
             }
-            
-            // Continue execution and try fallback method
         }
         
-        // Method 2: Fallback - use microphone
+        // Method 2: Fallback - use microphone with optimal settings for speech
         console.log("🎤 Requesting microphone access...");
         
         const micStream = await navigator.mediaDevices.getUserMedia({ 
@@ -476,8 +486,8 @@ async function getAudioStream() {
                 echoCancellation: true,
                 noiseSuppression: true,
                 autoGainControl: true,
-                sampleRate: 16000,
-                channelCount: 1
+                sampleRate: 16000,  // Optimal for speech recognition
+                channelCount: 1     // Mono is better for speech
             } 
         });
         
@@ -507,6 +517,22 @@ async function getAudioStream() {
                 timestamp: new Date().toISOString()
             }
         });
+        
+        // Try one last fallback method: basic audio capture with minimal constraints
+        try {
+            console.log("🔄 Trying minimal constraints as last resort...");
+            const basicStream = await navigator.mediaDevices.getUserMedia({ 
+                audio: true // Just the simplest possible constraint
+            });
+            
+            if (basicStream && basicStream.getAudioTracks().length > 0) {
+                window.audioSource = "basic_microphone";
+                console.log("✅ Basic audio stream obtained as last resort");
+                return basicStream;
+            }
+        } catch (fallbackErr) {
+            console.error("❌ Even basic audio capture failed:", fallbackErr);
+        }
         
         return null;
     }

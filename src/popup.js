@@ -1467,3 +1467,111 @@ function addChunkStyles() {
     
     document.head.appendChild(style);
 }
+
+// Add this function to popup.js to handle content script re-injection
+
+// Function to reinject content script when it's not responding
+async function reinjectContentScript(tabId) {
+    try {
+        console.log("🔄 Attempting to reinject content script...");
+        
+        // First show a loading state to the user
+        meetingInfo.innerHTML = `
+            <p>Reconnecting to Google Meet... <span class="loading-spinner"></span></p>
+            <p style="font-size: 12px; color: #5f6368;">This may take a few seconds</p>
+        `;
+        
+        // Add a loading spinner style if it doesn't exist
+        if (!document.querySelector('style#loading-spinner-style')) {
+            const style = document.createElement('style');
+            style.id = 'loading-spinner-style';
+            style.textContent = `
+                .loading-spinner {
+                    display: inline-block;
+                    width: 12px;
+                    height: 12px;
+                    border: 2px solid rgba(0, 0, 0, 0.1);
+                    border-radius: 50%;
+                    border-top-color: #1a73e8;
+                    animation: spin 1s linear infinite;
+                }
+                
+                @keyframes spin {
+                    to { transform: rotate(360deg); }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+        
+        // Send message to background script to reinject content script
+        const response = await new Promise((resolve, reject) => {
+            chrome.runtime.sendMessage({
+                type: "reinjectContentScript",
+                tabId: tabId
+            }, (response) => {
+                if (chrome.runtime.lastError) {
+                    reject(new Error(chrome.runtime.lastError.message));
+                } else {
+                    resolve(response);
+                }
+            });
+        });
+        
+        // Handle response
+        if (response && response.success) {
+            console.log("✅ Content script reinjected successfully");
+            
+            // Wait a short time for the script to initialize
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            // Try to ping the content script again
+            try {
+                const pingResponse = await pingContentScript(tabId, 2000);
+                if (pingResponse && pingResponse.available) {
+                    console.log("✅ Content script is now responding");
+                    
+                    // Update UI to show success
+                    showNotification("Соединение восстановлено", "Плагин успешно переподключен к Google Meet");
+                    
+                    // Refresh recording status
+                    chrome.tabs.sendMessage(tabId, { action: "getRecordingStatus" }, (response) => {
+                        if (chrome.runtime.lastError) {
+                            console.error("❌ Still having issues:", chrome.runtime.lastError.message);
+                            updateMeetingInfo(false, false, "");
+                            return;
+                        }
+                        
+                        if (response) {
+                            updateRecordingStatus(response.isRecording);
+                            updateMeetingInfo(true, response.meetingDetected, response.meetingName);
+                        }
+                    });
+                    
+                    return true;
+                }
+            } catch (pingError) {
+                console.error("❌ Content script still not responding after reinjection:", pingError);
+            }
+        }
+        
+        // If we got here, reinjection didn't fully succeed
+        console.error("❌ Content script reinjection failed or script not responding");
+        throw new Error("Failed to reconnect to Google Meet");
+    } catch (error) {
+        console.error("❌ Error reinjecting content script:", error);
+        
+        // Update UI to show failure
+        meetingInfo.innerHTML = `
+            <p>Не удалось подключиться к странице Google Meet.</p>
+            <p>Попробуйте <a href="#" id="refreshPageLink">обновить страницу</a> Google Meet.</p>
+        `;
+        
+        // Add refresh page link handler
+        document.getElementById('refreshPageLink')?.addEventListener('click', () => {
+            chrome.tabs.reload(tabId);
+            window.close(); // Close the popup
+        });
+        
+        return false;
+    }
+}

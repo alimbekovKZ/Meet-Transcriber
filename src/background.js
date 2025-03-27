@@ -616,7 +616,7 @@ function validateAndCleanTranscription(text) {
     return finalText;
 }
 
-// Replace this function in background.js
+// Improved download function with better reliability
 async function saveTranscriptionToFile(transcription, filename) {
     console.log("💾 Creating download file:", filename);
     
@@ -627,19 +627,33 @@ async function saveTranscriptionToFile(transcription, filename) {
     downloadDiagnostics.reset();
     
     try {
-        // First always save to storage for recovery
+        // Always save to storage first for recovery
         await storeTranscriptionData(validatedText, filename);
         downloadDiagnostics.addAttempt("storage", true);
         
-        // Method 1: Direct text file download - most reliable method
+        // Method 1: Direct text file download with Blob and explicit encoding
         try {
-            console.log("🔄 Trying text file download method...");
-            const blob = new Blob([validatedText], { 
+            console.log("🔄 Trying direct download with UTF-8 encoding...");
+            
+            // Add BOM (Byte Order Mark) for UTF-8
+            const BOM = new Uint8Array([0xEF, 0xBB, 0xBF]);
+            const textEncoder = new TextEncoder();
+            const encodedText = textEncoder.encode(validatedText);
+            
+            // Combine BOM and encoded text for proper UTF-8 handling
+            const combinedArray = new Uint8Array(BOM.length + encodedText.length);
+            combinedArray.set(BOM);
+            combinedArray.set(encodedText, BOM.length);
+            
+            // Create blob with proper type and encoding
+            const blob = new Blob([combinedArray], { 
                 type: 'text/plain;charset=utf-8' 
             });
             
+            // Get URL from blob
             const url = URL.createObjectURL(blob);
             
+            // Use chrome.downloads API
             const downloadId = await new Promise((resolve, reject) => {
                 chrome.downloads.download({
                     url: url,
@@ -660,8 +674,8 @@ async function saveTranscriptionToFile(transcription, filename) {
                 });
             });
             
-            downloadDiagnostics.addAttempt("text_file", downloadId);
-            console.log("✅ Text file download success, ID:", downloadId);
+            downloadDiagnostics.addAttempt("direct_download", downloadId);
+            console.log("✅ Direct download success, ID:", downloadId);
             
             // Monitor download progress
             chrome.downloads.onChanged.addListener(function onDownloadChanged(delta) {
@@ -678,30 +692,61 @@ async function saveTranscriptionToFile(transcription, filename) {
             });
             
             return downloadId;
-        } catch (textFileError) {
-            downloadDiagnostics.addAttempt("text_file", false, textFileError);
-            console.warn("⚠️ Text file download failed, trying fallback method...");
+        } catch (directError) {
+            downloadDiagnostics.addAttempt("direct_download", false, directError);
+            console.warn("⚠️ Direct download failed, trying fallback method...");
             
-            // Method 2: Try the helper tab method
+            // Method 2: Try the data URL method
             try {
-                console.log("🔄 Trying download helper tab method...");
-                const tabId = await createDownloadTab(validatedText, filename);
-                downloadDiagnostics.addAttempt("helper_tab", tabId);
-                console.log("✅ Helper tab download success, Tab ID:", tabId);
-                return tabId;
-            } catch (tabError) {
-                downloadDiagnostics.addAttempt("helper_tab", false, tabError);
-                console.warn("⚠️ Helper tab download failed, trying data URL method...");
+                console.log("🔄 Trying data URL download method...");
                 
-                // Method 3: Data URL Method
+                // Create data URL with proper encoding
+                const encoder = new TextEncoder();
+                const encodedData = encoder.encode(validatedText);
+                const blob = new Blob([encodedData], { type: 'text/plain;charset=utf-8' });
+                
+                // Convert to data URL
+                const dataUrl = await new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(reader.result);
+                    reader.onerror = () => reject(new Error("Failed to create data URL"));
+                    reader.readAsDataURL(blob);
+                });
+                
+                // Use chrome.downloads API with data URL
+                const downloadId = await new Promise((resolve, reject) => {
+                    chrome.downloads.download({
+                        url: dataUrl,
+                        filename: filename,
+                        saveAs: false
+                    }, (downloadId) => {
+                        if (chrome.runtime.lastError) {
+                            reject(new Error(`Data URL download error: ${chrome.runtime.lastError.message}`));
+                        } else if (!downloadId) {
+                            reject(new Error("Data URL download returned null ID"));
+                        } else {
+                            resolve(downloadId);
+                        }
+                    });
+                });
+                
+                downloadDiagnostics.addAttempt("data_url", downloadId);
+                console.log("✅ Data URL download success, ID:", downloadId);
+                
+                return downloadId;
+            } catch (dataUrlError) {
+                downloadDiagnostics.addAttempt("data_url", false, dataUrlError);
+                console.warn("⚠️ Data URL download failed, trying helper tab method...");
+                
+                // Method 3: Try the helper tab method
                 try {
-                    console.log("🔄 Trying data URL download method...");
-                    const dataUrlResult = await dataUrlDownload(validatedText, filename);
-                    downloadDiagnostics.addAttempt("data_url", dataUrlResult);
-                    console.log("✅ Data URL download success");
-                    return dataUrlResult;
-                } catch (dataUrlError) {
-                    downloadDiagnostics.addAttempt("data_url", false, dataUrlError);
+                    console.log("🔄 Trying download helper tab method...");
+                    const tabId = await createDownloadTab(validatedText, filename);
+                    downloadDiagnostics.addAttempt("helper_tab", tabId);
+                    console.log("✅ Helper tab download success, Tab ID:", tabId);
+                    return tabId;
+                } catch (tabError) {
+                    downloadDiagnostics.addAttempt("helper_tab", false, tabError);
                     
                     // All methods failed, but we still have the data in storage
                     const summary = downloadDiagnostics.getSummary();
@@ -1514,87 +1559,165 @@ function createWavFile(audioData) {
     return wavFile;
 }
 
-// Send audio to Whisper API
+// Add this improved error handling to background.js for API requests
+
+// Enhanced error handling for Whisper API
 async function sendToWhisperAPI(audioBlob, apiUrl, apiKey, language, filename) {
-    try {
-        console.log(`🌍 Отправка ${filename} на API ${apiUrl}`);
-        
-        // Create form data
-        const formData = new FormData();
-        formData.append("file", audioBlob, filename);
-        formData.append("model", WHISPER_MODEL);
-        formData.append("language", language);
-        formData.append("response_format", "json");
-        
-        // Set up headers
-        const headers = new Headers();
-        if (apiKey.startsWith("sk-proj-")) {
-            // Project key - try multiple auth methods
-            headers.append("Authorization", `Bearer ${apiKey}`);
-            headers.append("X-API-Key", apiKey);
-        } else {
-            // Standard key
-            headers.append("Authorization", `Bearer ${apiKey}`);
-        }
-        
-        // Set up request with timeout
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 60000); // 1-minute timeout
-        
-        // Send request
-        const response = await fetch(apiUrl, {
-            method: "POST",
-            headers: headers,
-            body: formData,
-            signal: controller.signal
-        });
-        
-        clearTimeout(timeoutId);
-        
-        // Check for HTTP errors
-        if (!response.ok) {
-            // Try to parse error response
-            let errorMessage;
-            try {
-                const errorData = await response.json();
-                errorMessage = errorData.error || `HTTP ошибка: ${response.status}`;
-            } catch (e) {
-                errorMessage = `HTTP ошибка: ${response.status}`;
+    let retryCount = 0;
+    const maxRetries = 3;
+    const retryDelays = [1000, 3000, 6000]; // Exponential backoff
+    
+    while (retryCount <= maxRetries) {
+        try {
+            console.log(`🌍 Sending ${filename} to API ${apiUrl} (attempt ${retryCount + 1}/${maxRetries + 1})`);
+            
+            // Create form data
+            const formData = new FormData();
+            formData.append("file", audioBlob, filename);
+            formData.append("model", WHISPER_MODEL);
+            formData.append("language", language);
+            formData.append("response_format", "json");
+            
+            // Set temperature for better accuracy
+            formData.append("temperature", "0.0");
+            
+            // Set up headers with auth method detection
+            const headers = new Headers();
+            if (apiKey.startsWith("sk-proj-")) {
+                // Project key - try multiple auth methods for better compatibility
+                headers.append("Authorization", `Bearer ${apiKey}`);
+                headers.append("X-API-Key", apiKey);
+            } else {
+                // Standard key
+                headers.append("Authorization", `Bearer ${apiKey}`);
             }
             
-            return { 
-                success: false, 
-                error: errorMessage
-            };
-        }
-        
-        // Parse successful response
-        const result = await response.json();
-        
-        if (result.text) {
-            return {
-                success: true,
-                text: result.text
-            };
-        } else {
+            // Set up request with timeout
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 60000); // 1-minute timeout
+            
+            // Send request
+            const response = await fetch(apiUrl, {
+                method: "POST",
+                headers: headers,
+                body: formData,
+                signal: controller.signal
+            });
+            
+            clearTimeout(timeoutId);
+            
+            // Check for rate limiting (429) or server errors (5xx)
+            if (response.status === 429 || (response.status >= 500 && response.status < 600)) {
+                if (retryCount < maxRetries) {
+                    retryCount++;
+                    const delay = retryDelays[retryCount - 1] || 10000;
+                    console.log(`⏳ Rate limited or server error. Retrying in ${delay}ms... (${retryCount}/${maxRetries})`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    continue; // Retry the request
+                }
+            }
+            
+            // Check for HTTP errors
+            if (!response.ok) {
+                // Try to parse error response
+                let errorMessage;
+                try {
+                    const errorData = await response.json();
+                    errorMessage = errorData.error?.message || 
+                                  errorData.error || 
+                                  `HTTP error: ${response.status}`;
+                } catch (e) {
+                    errorMessage = `HTTP error: ${response.status}`;
+                }
+                
+                return { 
+                    success: false, 
+                    error: errorMessage,
+                    status: response.status
+                };
+            }
+            
+            // Parse successful response
+            let result;
+            try {
+                result = await response.json();
+            } catch (jsonError) {
+                // Try to handle non-JSON responses
+                const textResponse = await response.text();
+                console.warn("⚠️ Non-JSON response:", textResponse.substring(0, 100) + "...");
+                
+                // If the response contains text, try to extract it
+                if (textResponse.includes('"text"')) {
+                    try {
+                        // Try to manually extract the text field
+                        const match = textResponse.match(/"text"\s*:\s*"([^"]*)"/);
+                        if (match && match[1]) {
+                            return {
+                                success: true,
+                                text: match[1]
+                            };
+                        }
+                    } catch (e) {
+                        console.error("❌ Failed to extract text from response:", e);
+                    }
+                }
+                
+                return {
+                    success: false,
+                    error: "Failed to parse API response",
+                    rawResponse: textResponse.substring(0, 500) // Include part of the raw response for debugging
+                };
+            }
+            
+            if (result.text) {
+                return {
+                    success: true,
+                    text: result.text
+                };
+            } else {
+                return {
+                    success: false,
+                    error: "API returned response without text"
+                };
+            }
+        } catch (error) {
+            // Handle abort/timeout errors
+            if (error.name === 'AbortError') {
+                if (retryCount < maxRetries) {
+                    retryCount++;
+                    console.log(`⏱️ Request timed out. Retrying... (${retryCount}/${maxRetries})`);
+                    continue; // Retry the request
+                }
+                
+                return {
+                    success: false,
+                    error: "Request timed out after multiple attempts"
+                };
+            }
+            
+            // For network errors, also retry
+            if (error.message.includes('network') && retryCount < maxRetries) {
+                retryCount++;
+                const delay = retryDelays[retryCount - 1] || 10000;
+                console.log(`🌐 Network error. Retrying in ${delay}ms... (${retryCount}/${maxRetries})`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                continue; // Retry the request
+            }
+            
+            // Other errors
             return {
                 success: false,
-                error: "API вернул ответ без текста"
+                error: error.message,
+                errorName: error.name
             };
         }
-    } catch (error) {
-        if (error.name === 'AbortError') {
-            return {
-                success: false,
-                error: "Превышено время ожидания ответа от сервера"
-            };
-        }
-        
-        return {
-            success: false,
-            error: error.message
-        };
     }
+    
+    // If we've exhausted all retries
+    return {
+        success: false,
+        error: "Maximum retries exceeded"
+    };
 }
 
 // Improved message handler for download-related requests
@@ -1757,7 +1880,7 @@ function showNotification(title, message) {
     if (typeof chrome.notifications !== 'undefined' && chrome.notifications.create) {
         chrome.notifications.create({
             type: 'basic',
-            iconUrl: '../images/icon128.png', // Update path to your extension icon
+            iconUrl: '/images/icon128.png', // Update path to your extension icon
             title: title,
             message: message
         });
