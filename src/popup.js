@@ -25,14 +25,14 @@ downloadBtn.addEventListener("click", () => {
 // Comprehensive download function with diagnostics
 async function downloadWithDiagnostics() {
     // Show immediate feedback
-    showNotification('Начинаем скачивание...');
+    showNotification('Starting download...');
     
     try {
         // First check what's in storage
         const transcription = await getTranscriptionFromStorage();
         
         if (!transcription || !transcription.text) {
-            showNotification('Нет сохраненной транскрипции');
+            showNotification('No saved transcription');
             return;
         }
         
@@ -63,7 +63,7 @@ async function downloadWithDiagnostics() {
                         
                         if (msg.success) {
                             console.log("✅ Download completed:", msg.result);
-                            showNotification('Скачивание файла начато');
+                            showNotification('File download started');
                         } else {
                             console.error("❌ Background download failed:", msg.error);
                             
@@ -85,14 +85,14 @@ async function downloadWithDiagnostics() {
             }
             
             console.error("❌ Background download failed, trying fallback...", response?.error || "Unknown error");
-            throw new Error(response?.error || "Скачивание не удалось");
+            throw new Error(response?.error || "Download failed");
         } catch (error) {
             console.error("❌ Background method failed:", error);
             await popupDownloadFallback(transcription.text, transcription.filename);
         }
     } catch (error) {
         console.error("❌ Download error:", error);
-        showNotification('Ошибка скачивания: ' + error.message, 5000);
+        showNotification('Download error: ' + error.message, 5000);
         
         // Last resort - show diagnostic info button
         showDiagnosticButton();
@@ -110,7 +110,7 @@ async function popupDownloadFallback(text, filename) {
         
         if (response && response.success) {
             console.log("✅ Redownload started:", response.result);
-            showNotification('Скачивание файла начато');
+            showNotification('File download started');
             return;
         } 
         
@@ -131,7 +131,7 @@ async function popupDownloadFallback(text, filename) {
             console.log("🔄 Trying UTF-8 encoded download method...");
             await utf8EncodedDownload(text, filename);
             console.log("✅ UTF-8 encoded download worked");
-            showNotification('Скачивание файла начато');
+            showNotification('File download started');
             return;
         } catch (encodedError) {
             console.error("❌ UTF-8 encoded method failed:", encodedError);
@@ -141,14 +141,14 @@ async function popupDownloadFallback(text, filename) {
                 console.log("🔄 Trying direct text file method...");
                 await directTextFileDownload(text, filename);
                 console.log("✅ Direct text file download worked");
-                showNotification('Скачивание файла начато');
+                showNotification('File download started');
                 return;
             } catch (directError) {
                 console.error("❌ Direct text file method failed:", directError);
                 
                 // Method 5: Offer copy to clipboard instead as last resort
                 console.log("🔄 All download methods failed, offering copy...");
-                showNotification('Скачивание не удалось. Попробуйте скопировать текст.', 5000);
+                showNotification('Download failed. Try copying the text.', 5000);
                 
                 // Make copy button prominent
                 highlightCopyButton();
@@ -303,7 +303,7 @@ function highlightCopyButton() {
         // Apply prominent styling
         copyBtn.className = 'btn primary';
         copyBtn.style.fontWeight = 'bold';
-        copyBtn.innerHTML = '📋 Скопировать текст (рекомендуется)';
+        copyBtn.innerHTML = '📋 Copy text (recommended)';
         
         // Add glow effect with CSS
         const style = document.createElement('style');
@@ -336,7 +336,7 @@ function showDiagnosticButton() {
     diagnosticBtn.id = 'diagnosticBtn';
     diagnosticBtn.className = 'btn secondary';
     diagnosticBtn.style.marginTop = '10px';
-    diagnosticBtn.textContent = 'Показать диагностику';
+    diagnosticBtn.textContent = 'Show diagnostics';
     
     // Add to download actions
     const downloadActions = document.querySelector('.download-actions');
@@ -368,17 +368,17 @@ function showDiagnosticButton() {
             
             // Add diagnostic content
             diagInfo.innerHTML = `
-                <h3 style="margin-top:0">Диагностика скачивания</h3>
-                <p><strong>Разрешения:</strong> ${JSON.stringify(diagnostics.permissions)}</p>
-                <p><strong>Последняя ошибка:</strong> ${diagnostics.lastError || 'Нет'}</p>
-                <p><strong>Выполненные попытки:</strong> ${diagnostics.downloadDiagnostics.totalAttempts}</p>
-                <p><strong>Методы:</strong> ${diagnostics.downloadDiagnostics.methods.join(', ')}</p>
-                <p><strong>Ошибки:</strong></p>
+                <h3 style="margin-top:0">Download diagnostics</h3>
+                <p><strong>Permissions:</strong> ${JSON.stringify(diagnostics.permissions)}</p>
+                <p><strong>Last error:</strong> ${diagnostics.lastError || 'No'}</p>
+                <p><strong>Attempts:</strong> ${diagnostics.downloadDiagnostics.totalAttempts}</p>
+                <p><strong>Methods:</strong> ${diagnostics.downloadDiagnostics.methods.join(', ')}</p>
+                <p><strong>Errors:</strong></p>
                 <ul style="margin-bottom:16px">
                     ${diagnostics.downloadDiagnostics.allErrors.map(err => `<li>${err}</li>`).join('')}
                 </ul>
                 <button id="closeDiagBtn" style="background:#1a73e8;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">
-                    Закрыть
+                    Close
                 </button>
             `;
             
@@ -391,7 +391,7 @@ function showDiagnosticButton() {
             });
         } catch (error) {
             console.error("❌ Error getting diagnostics:", error);
-            showNotification('Ошибка получения диагностики', 3000);
+            showNotification('Error receiving diagnostics', 3000);
         }
     });
 }
@@ -408,7 +408,7 @@ function addImprovedCopyButton() {
     const copyBtn = document.createElement('button');
     copyBtn.id = 'copyTextBtn';
     copyBtn.className = 'btn secondary';
-    copyBtn.innerHTML = '<span class="btn-icon">📋</span> Скопировать текст';
+    copyBtn.innerHTML = '<span class="btn-icon">📋</span> Copy text';
     
     // Insert after download button
     if (downloadBtn && downloadBtn.parentNode) {
@@ -421,7 +421,7 @@ function addImprovedCopyButton() {
             const result = await getTranscriptionFromStorage();
             
             if (!result || !result.text) {
-                showNotification("Нет сохраненной транскрипции");
+                showNotification("No saved transcription");
                 return;
             }
             
@@ -431,7 +431,7 @@ function addImprovedCopyButton() {
                 
                 // Show success state
                 const originalHTML = copyBtn.innerHTML;
-                copyBtn.innerHTML = '<span class="btn-icon">✓</span> Скопировано!';
+                copyBtn.innerHTML = '<span class="btn-icon">✓</span> Copied!';
                 copyBtn.classList.add('success');
                 
                 // Reset after delay
@@ -456,21 +456,21 @@ function addImprovedCopyButton() {
                     
                     // Show success state
                     const originalHTML = copyBtn.innerHTML;
-                    copyBtn.innerHTML = '<span class="btn-icon">✓</span> Скопировано!';
+                    copyBtn.innerHTML = '<span class="btn-icon">✓</span> Copied!';
                     
                     // Reset after delay
                     setTimeout(() => {
                         copyBtn.innerHTML = originalHTML;
                     }, 2000);
                 } catch (e) {
-                    showNotification("Не удалось скопировать текст");
+                    showNotification("Failed to copy text");
                 } finally {
                     document.body.removeChild(textarea);
                 }
             }
         } catch (error) {
             console.error("Copy error:", error);
-            showNotification("Ошибка при копировании");
+            showNotification("Error while copying");
         }
     });
     
@@ -567,11 +567,11 @@ function setupPreviewFunctionality() {
                     previewContent.style.display = 'block';
                     previewText.textContent = result.transcription.text.substring(0, 500) + 
                                              (result.transcription.text.length > 500 ? '...' : '');
-                    togglePreviewBtn.textContent = 'Скрыть текст';
+                    togglePreviewBtn.textContent = 'Hide text';
                 } else {
                     // Hide preview
                     previewContent.style.display = 'none';
-                    togglePreviewBtn.textContent = 'Показать текст';
+                    togglePreviewBtn.textContent = 'Show text';
                 }
             });
         } else {
@@ -585,7 +585,7 @@ function setupPreviewFunctionality() {
 function manualDownload() {
     chrome.storage.local.get(['transcription'], (result) => {
         if (!result.transcription || !result.transcription.text) {
-            showNotification('Нет сохраненной транскрипции');
+            showNotification('No saved transcription');
             return;
         }
         
@@ -593,15 +593,15 @@ function manualDownload() {
             // Use direct UTF-8 encoded download
             directTextFileDownload(result.transcription.text, result.transcription.filename)
                 .then(() => {
-                    showNotification('Скачивание начато');
+                    showNotification('Download started');
                 })
                 .catch((error) => {
-                    console.error('Ошибка прямого скачивания:', error);
-                    showNotification('Ошибка скачивания: ' + error.message);
+                    console.error('Direct download error:', error);
+                    showNotification('Download error: ' + error.message);
                 });
         } catch (error) {
-            console.error('Ошибка скачивания:', error);
-            showNotification('Ошибка скачивания: ' + error.message);
+            console.error('Download error::', error);
+            showNotification('Download error: ' + error.message);
         }
     });
 }
@@ -661,8 +661,8 @@ document.addEventListener("DOMContentLoaded", async () => {
             
             // Show a more helpful message in the UI
             meetingInfo.innerHTML = `
-                <p>Не удалось подключиться к странице Google Meet.</p>
-                <p>Попробуйте <a href="#" id="reloadLink">обновить страницу</a> Google Meet.</p>
+                <p>Unable to connect to Google Meet page.</p>
+                <p>Try <a href="#" id="reloadLink">refreshing the page</a> Google Meet.</p>
             `;
             
             // Add reload link handler
@@ -704,7 +704,7 @@ startBtn.addEventListener("click", async () => {
         const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
         
         if (!tabs[0]?.url?.includes("meet.google.com")) {
-            alert("Пожалуйста, откройте Google Meet для записи звонка.");
+            alert("Please open Google Meet to record the call.");
             return;
         }
         
@@ -726,13 +726,13 @@ startBtn.addEventListener("click", async () => {
             source: "userInitiated" // Важно: указываем, что действие инициировано пользователем
         }, (response) => {
             if (chrome.runtime.lastError) {
-                console.error("Ошибка связи с content script:", chrome.runtime.lastError.message);
+                console.error("Error connecting to content script:", chrome.runtime.lastError.message);
                 
                 // Восстанавливаем UI, если возникла ошибка
                 updateRecordingStatus(false);
                 
                 // Показываем ошибку пользователю
-                showNotification("Ошибка запуска записи: " + chrome.runtime.lastError.message);
+                showNotification("Error starting recording: " + chrome.runtime.lastError.message);
                 return;
             }
             
@@ -740,17 +740,17 @@ startBtn.addEventListener("click", async () => {
                 console.log(response.status);
                 
                 if (response.captureType === "microphone") {
-                    showNotification("Запись началась через микрофон", 
-                                   "Захват системного звука недоступен. Используется микрофон.");
+                    showNotification("Recording started via microphone", 
+                                   "System audio capture is unavailable. Microphone in use.");
                 } else {
-                    showNotification("Запись началась");
+                    showNotification("Recording has started");
                 }
             }
         });
     } catch (error) {
-        console.error("Ошибка при запуске записи:", error);
+        console.error("Error starting recording:", error);
         updateRecordingStatus(false);
-        showNotification("Не удалось запустить запись: " + error.message);
+        showNotification("Failed to start recording: " + error.message);
     }
 });
 
@@ -765,7 +765,7 @@ async function checkMediaPermissions() {
     
     // Проверяем, поддерживается ли API разрешений
     if (!navigator.permissions || !navigator.permissions.query) {
-        console.log("API разрешений не поддерживается, используем альтернативный метод проверки");
+        console.log("Permissions API is not supported, using an alternative verification method");
         // Альтернативный метод - попробуем получить устройства
         try {
             const devices = await navigator.mediaDevices.enumerateDevices();
@@ -781,7 +781,7 @@ async function checkMediaPermissions() {
             
             return result;
         } catch (e) {
-            console.error("Не удалось проверить устройства:", e);
+            console.error("Failed to check devices:", e);
             return result;
         }
     }
@@ -793,7 +793,7 @@ async function checkMediaPermissions() {
             result.hasMicrophone = micPermission.state === 'granted';
             result.microphoneState = micPermission.state;
         } catch (e) {
-            console.warn("Не удалось запросить состояние разрешения микрофона:", e);
+            console.warn("Failed to query microphone permission state:", e);
         }
         
         // Проверяем разрешение на доступ к камере
@@ -802,12 +802,12 @@ async function checkMediaPermissions() {
             result.hasCamera = cameraPermission.state === 'granted';
             result.cameraState = cameraPermission.state;
         } catch (e) {
-            console.warn("Не удалось запросить состояние разрешения камеры:", e);
+            console.warn("Failed to query camera permission status:", e);
         }
         
         return result;
     } catch (error) {
-        console.error("Ошибка при проверке разрешений:", error);
+        console.error("Error checking permissions:", error);
         return result;
     }
 }
@@ -831,17 +831,17 @@ async function handleStartRecording() {
         const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
         
         if (!tabs[0]?.url?.includes("meet.google.com")) {
-            showNotification("Ошибка", "Пожалуйста, откройте Google Meet для записи звонка");
+            showNotification("Error", "Please open Google Meet to record the call");
             return;
         }
         
         // Сначала обновляем UI, чтобы дать мгновенную обратную связь
         updateRecordingStatus(true);
-        showNotification("Подготовка к записи...");
+        showNotification("Preparing to record...");
         
         // Проверяем состояние разрешений
         const permissionStatus = await checkMediaPermissions();
-        console.log("Статус разрешений:", permissionStatus);
+        console.log("Permission status:", permissionStatus);
         
         // Если нет разрешения на микрофон, сначала проверяем состояние
         if (permissionStatus.microphoneState === 'denied') {
@@ -858,48 +858,48 @@ async function handleStartRecording() {
         }, (response) => {
             // Проверяем наличие ошибки взаимодействия с content script
             if (chrome.runtime.lastError) {
-                console.error("Ошибка связи с content script:", chrome.runtime.lastError);
+                console.error("Error communicating with content script:", chrome.runtime.lastError);
                 updateRecordingStatus(false);
-                showNotification("Ошибка запуска записи", chrome.runtime.lastError.message);
+                showNotification("Recording start error", chrome.runtime.lastError.message);
                 return;
             }
             
             // Обрабатываем ответ
             if (response) {
-                console.log("Ответ от content script:", response);
+                console.log("Response from content script:", response);
                 
                 if (response.error) {
                     // Обработка ошибки от content script
                     updateRecordingStatus(false);
                     
                     if (response.error === 'userInteractionRequired') {
-                        showNotification("Требуется взаимодействие пользователя", 
-                            "Пожалуйста, запустите запись снова");
+                        showNotification("User interaction required", 
+                    "Please start the recording again");
                     } else if (response.error === 'permissionDenied') {
                         showMicrophoneBlockedDialog();
                     } else {
-                        showNotification("Ошибка записи", response.error);
+                        showNotification("Recording error", response.error);
                     }
                 } else {
                     // Запись успешно запущена
                     if (response.captureType === "microphone") {
-                        showNotification("Запись началась (микрофон)", 
-                            "Используется микрофон для записи");
+                        showNotification("Recording started (microphone)", 
+                    "Microphone is being used for recording");
                     } else {
-                        showNotification("Запись началась", 
-                            "Идет запись звука");
+                        showNotification("Recording started", 
+                    "Audio recording is in progress");
                     }
                 }
             } else {
                 // Нет ответа - что-то пошло не так
                 updateRecordingStatus(false);
-                showNotification("Нет ответа от страницы Google Meet");
+                showNotification("No response from Google Meet page");
             }
         });
     } catch (error) {
-        console.error("Ошибка при запуске записи:", error);
+        console.error("Error starting recording:", error);
         updateRecordingStatus(false);
-        showNotification("Ошибка запуска", error.message);
+        showNotification("Startup error", error.message);
     }
 }
 
@@ -923,24 +923,24 @@ function showMicrophoneBlockedDialog() {
     
     // Содержимое модального окна
     modal.innerHTML = `
-        <div style="background-color: white; border-radius: 8px; width: 85%; max-width: 400px; padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
-            <h3 style="margin-top: 0; color: #ea4335;">Доступ к микрофону заблокирован</h3>
-            
-            <p>Для работы записи необходим доступ к микрофону или системному звуку.</p>
-            
-            <p style="margin-bottom: 5px;"><strong>Как разрешить доступ:</strong></p>
-            <ol style="margin-top: 0; padding-left: 20px;">
-                <li>Нажмите на значок 🔒 или 🔇 в адресной строке</li>
-                <li>Выберите "Разрешения сайта" или "Настройки сайта"</li>
-                <li>Найдите "Микрофон" и установите "Разрешить"</li>
-                <li>Обновите страницу и попробуйте снова</li>
-            </ol>
-            
-            <div style="margin-top: 20px; display: flex; justify-content: flex-end; gap: 8px;">
-                <button id="helpBtn" style="background: none; border: 1px solid #dadce0; padding: 8px 16px; border-radius: 4px; cursor: pointer;">Подробнее</button>
-                <button id="closeModalBtn" style="background-color: #1a73e8; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">Закрыть</button>
-            </div>
+    <div style="background-color: white; border-radius: 8px; width: 85%; max-width: 400px; padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+        <h3 style="margin-top: 0; color: #ea4335;">Microphone access blocked</h3>
+        
+        <p>Recording requires access to the microphone or system audio.</p>
+        
+        <p style="margin-bottom: 5px;"><strong>How to allow access:</strong></p>
+        <ol style="margin-top: 0; padding-left: 20px;">
+            <li>Click on the 🔒 or 🔇 icon in the address bar</li>
+            <li>Select "Site permissions" or "Site settings"</li>
+            <li>Find "Microphone" and set it to "Allow"</li>
+            <li>Refresh the page and try again</li>
+        </ol>
+        
+        <div style="margin-top: 20px; display: flex; justify-content: flex-end; gap: 8px;">
+            <button id="helpBtn" style="background: none; border: 1px solid #dadce0; padding: 8px 16px; border-radius: 4px; cursor: pointer;">Learn more</button>
+            <button id="closeModalBtn" style="background-color: #1a73e8; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">Close</button>
         </div>
+    </div>
     `;
     
     // Добавляем модальное окно на страницу
@@ -973,19 +973,19 @@ function showPermissionDialog(permissionType) {
     const dialog = document.createElement('div');
     dialog.className = 'permission-dialog';
     dialog.innerHTML = `
-        <div class="permission-dialog-content">
-            <h3>Требуется разрешение</h3>
-            <p>Для работы функции записи необходим доступ к ${
-                permissionType === 'microphone' ? 'микрофону' : 
-                permissionType === 'camera' ? 'камере' : 
-                'медиаустройствам'
-            }.</p>
-            <p>Разрешите доступ при появлении запроса от браузера.</p>
-            <div class="permission-dialog-actions">
-                <button id="requestPermissionBtn" class="btn primary">Запросить доступ</button>
-                <button id="cancelPermissionBtn" class="btn secondary">Отмена</button>
-            </div>
+    <div class="permission-dialog-content">
+        <h3>Permission Required</h3>
+        <p>Recording functionality requires access to ${
+            permissionType === 'microphone' ? 'the microphone' : 
+            permissionType === 'camera' ? 'the camera' : 
+            'media devices'
+        }.</p>
+        <p>Please allow access when prompted by the browser.</p>
+        <div class="permission-dialog-actions">
+            <button id="requestPermissionBtn" class="btn primary">Request Access</button>
+            <button id="cancelPermissionBtn" class="btn secondary">Cancel</button>
         </div>
+    </div>
     `;
     
     // Добавляем стили
@@ -1047,20 +1047,20 @@ function showPermissionDialog(permissionType) {
             // Перезапускаем процесс
             startBtn.click();
         } catch (error) {
-            console.error(`Ошибка при запросе разрешения на ${permissionType}:`, error);
-            
-            // Обновляем сообщение в диалоге
+            console.error(`Error requesting permission for ${permissionType}:`, error);
+
+            // Update the message in the dialog
             const content = dialog.querySelector('.permission-dialog-content');
             content.innerHTML = `
-                <h3>Доступ запрещен</h3>
-                <p>Вы не дали разрешение на доступ к ${
-                    permissionType === 'microphone' ? 'микрофону' : 
-                    permissionType === 'camera' ? 'камере' : 
-                    'экрану'
+                <h3>Access Denied</h3>
+                <p>You did not grant permission to access ${
+                    permissionType === 'microphone' ? 'the microphone' : 
+                    permissionType === 'camera' ? 'the camera' : 
+                    'the screen'
                 }.</p>
-                <p>Для работы плагина необходимо разрешить доступ в настройках браузера.</p>
+                <p>To use this extension, please allow access in your browser settings.</p>
                 <div class="permission-dialog-actions">
-                    <button id="closePermissionBtn" class="btn primary">Понятно</button>
+                    <button id="closePermissionBtn" class="btn primary">Got it</button>
                 </div>
             `;
             
@@ -1101,7 +1101,7 @@ disableBtn.addEventListener("click", async () => {
                 updateRecordingStatus(false);
                 
                 // Update button to show it's disabled
-                disableBtn.textContent = "Запись отключена для этой встречи";
+                disableBtn.textContent = "Recording is disabled for this meeting.";
                 disableBtn.disabled = true;
                 disableBtn.classList.add("disabled");
             }
@@ -1132,9 +1132,9 @@ function updateUIState(isGoogleMeet) {
         disableBtn.classList.add("disabled");
         
         statusIndicator.classList.add("inactive");
-        statusIndicator.setAttribute("title", "Не на странице Google Meet");
-        
-        meetingInfo.innerHTML = "<p>Откройте Google Meet для использования плагина</p>";
+        statusIndicator.setAttribute("title", "Not on a Google Meet page");
+
+        meetingInfo.innerHTML = "<p>Open Google Meet to use the extension</p>";
     }
 }
 
@@ -1143,7 +1143,7 @@ function updateRecordingStatus(isRecording) {
     if (isRecording) {
         statusIndicator.classList.remove("inactive");
         statusIndicator.classList.add("active");
-        statusIndicator.setAttribute("title", "Запись активна");
+        statusIndicator.setAttribute("title", "Recording is active");
         
         startBtn.disabled = true;
         stopBtn.disabled = false;
@@ -1153,7 +1153,7 @@ function updateRecordingStatus(isRecording) {
     } else {
         statusIndicator.classList.remove("active");
         statusIndicator.classList.add("inactive");
-        statusIndicator.setAttribute("title", "Запись не активна");
+        statusIndicator.setAttribute("title", "Recording is not active");
         
         startBtn.disabled = false;
         stopBtn.disabled = true;
@@ -1166,14 +1166,14 @@ function updateRecordingStatus(isRecording) {
 // Update meeting info section
 function updateMeetingInfo(isGoogleMeet, meetingDetected, meetingName) {
     if (!isGoogleMeet) {
-        meetingInfo.innerHTML = "<p>Откройте Google Meet для использования плагина</p>";
+        meetingInfo.innerHTML = "<p>Open Google Meet to use the extension</p>";
         return;
     }
     
     if (meetingDetected) {
-        meetingInfo.innerHTML = `<p>Текущая встреча: <strong>${meetingName}</strong></p>`;
+        meetingInfo.innerHTML = `<p>Current meeting: <strong>${meetingName}</strong></p>`;
     } else {
-        meetingInfo.innerHTML = "<p>Звонок не обнаружен. Подождите начала звонка или обновите страницу.</p>";
+        meetingInfo.innerHTML = "<p>No call detected. Please wait for the call to start or refresh the page.</p>";
     }
 }
 
@@ -1207,8 +1207,8 @@ function loadTranscriptionInfo() {
                 const chunkIndicator = document.createElement('div');
                 chunkIndicator.className = 'chunk-indicator';
                 chunkIndicator.innerHTML = `
-                    <span class="badge">Часть ${result.transcription.chunkNumber}</span>
-                    <span class="chunk-info">Идет запись длинного звонка</span>
+                <span class="badge">Part ${result.transcription.chunkNumber}</span>
+                <span class="chunk-info">Recording a long call</span>
                 `;
                 
                 // Add to the transcription info section
@@ -1277,19 +1277,19 @@ function setupPreviewSection(transcription) {
                     : transcription.text;
                 
                 previewText.textContent = textToShow;
-                togglePreviewBtn.textContent = 'Скрыть текст';
+                togglePreviewBtn.textContent = 'Hide text';
                 
                 // For very long transcriptions, add a note
                 if (transcription.text.length > 10000) {
                     const noteElement = document.createElement('div');
                     noteElement.className = 'preview-note';
-                    noteElement.textContent = 'Показана только часть текста. Полный текст доступен в скачанном файле.';
+                    noteElement.textContent = 'Only part of the text is shown. The full text is available in the downloaded file.';
                     previewContent.appendChild(noteElement);
                 }
             } else {
                 // Hide preview
                 previewContent.style.display = 'none';
-                togglePreviewBtn.textContent = 'Показать текст';
+                togglePreviewBtn.textContent = 'Show text';
             }
         });
     } else {
@@ -1297,6 +1297,7 @@ function setupPreviewSection(transcription) {
         previewSection.style.display = 'none';
     }
 }
+
 
 // Add function to display a summary of chunks
 function addChunksSummary(chunks) {
@@ -1320,17 +1321,18 @@ function addChunksSummary(chunks) {
     
     // Create content
     chunksOverview.innerHTML = `
-        <h3>Обработка длинного звонка</h3>
-        <div class="chunks-progress">
-            <div class="progress-info">
-                <span class="progress-label">Записано частей: ${getTotalChunksCount(chunks)}</span>
-                <div class="progress-indicator"></div>
-            </div>
+    <h3>Processing a long call</h3>
+    <div class="chunks-progress">
+        <div class="progress-info">
+            <span class="progress-label">Recorded parts: ${getTotalChunksCount(chunks)}</span>
+            <div class="progress-indicator"></div>
         </div>
-        <div class="chunk-actions">
-            <button id="combineChunksBtn" class="btn secondary">Объединить части</button>
-        </div>
+    </div>
+    <div class="chunk-actions">
+        <button id="combineChunksBtn" class="btn secondary">Merge parts</button>
+    </div>
     `;
+
     
     // Insert into the transcription section
     const transcriptionSection = document.getElementById('transcriptionSection');
@@ -1346,14 +1348,14 @@ function addChunksSummary(chunks) {
             meetingKey: meetings[0] // Just use the first meeting for now
         }, (response) => {
             if (chrome.runtime.lastError) {
-                showNotification("Ошибка", "Не удалось объединить части: " + chrome.runtime.lastError.message);
+                showNotification("Error", "Failed to merge parts: " + chrome.runtime.lastError.message);
             } else if (response && response.success) {
-                showNotification("Успешно", "Части транскрипции объединены");
+                showNotification("Success", "Transcription parts merged");
                 
                 // Reload transcription info
                 loadTranscriptionInfo();
             } else {
-                showNotification("Ошибка", response?.error || "Не удалось объединить части");
+                showNotification("Error", response?.error || "Failed to merge parts");
             }
         });
     });
@@ -1531,7 +1533,7 @@ async function reinjectContentScript(tabId) {
                     console.log("✅ Content script is now responding");
                     
                     // Update UI to show success
-                    showNotification("Соединение восстановлено", "Плагин успешно переподключен к Google Meet");
+                    showNotification("Connection Restored", "The plugin has successfully reconnected to Google Meet");
                     
                     // Refresh recording status
                     chrome.tabs.sendMessage(tabId, { action: "getRecordingStatus" }, (response) => {
@@ -1562,9 +1564,9 @@ async function reinjectContentScript(tabId) {
         
         // Update UI to show failure
         meetingInfo.innerHTML = `
-            <p>Не удалось подключиться к странице Google Meet.</p>
-            <p>Попробуйте <a href="#" id="refreshPageLink">обновить страницу</a> Google Meet.</p>
-        `;
+        <p>Failed to connect to the Google Meet page.</p>
+        <p>Try <a href="#" id="refreshPageLink">refreshing the Google Meet page</a>.</p>
+         `;    
         
         // Add refresh page link handler
         document.getElementById('refreshPageLink')?.addEventListener('click', () => {

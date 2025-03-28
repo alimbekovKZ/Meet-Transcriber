@@ -9,38 +9,75 @@
 <body>
   <div class="container">
     <header>
-      <h1>Google Meet Transcription</h1>
-      <div class="status-indicator" id="statusIndicator"></div>
+      <div class="header-content">
+        <h1>Google Meet Transcription</h1>
+        <div class="status-container">
+          <div class="status-indicator" id="statusIndicator"></div>
+          <span id="statusText">Ready</span>
+        </div>
+      </div>
     </header>
     
     <div class="meeting-info" id="meetingInfo">
-      <p>Нет активного звонка</p>
+      <div class="card">
+        <div class="card-content">
+          <p class="no-meeting">No active Google Meet call detected</p>
+        </div>
+      </div>
     </div>
     
     <div class="controls">
-      <button id="startBtn" class="btn primary">Начать запись</button>
-      <button id="stopBtn" class="btn danger">Остановить запись</button>
-      <button id="disableBtn" class="btn secondary">Не записывать эту встречу</button>
+      <button id="startBtn" class="btn primary">
+        <span class="btn-icon">🎙️</span> Start Recording
+      </button>
+      <button id="stopBtn" class="btn danger">
+        <span class="btn-icon">⏹️</span> Stop Recording
+      </button>
+      <button id="disableBtn" class="btn secondary">
+        <span class="btn-icon">🚫</span> Don't Record This Meeting
+      </button>
     </div>
     
     <!-- Transcription section -->
     <div class="transcription-section" id="transcriptionSection">
-      <h2>Последняя транскрипция</h2>
-      <div id="noTranscription" class="empty-state">
-        <p>Нет сохраненных транскрипций</p>
+      <div class="section-header">
+        <h2>Latest Transcription</h2>
+        <span id="refreshTranscription" class="refresh-btn" title="Refresh">🔄</span>
       </div>
+      
+      <div id="noTranscription" class="empty-state">
+        <div class="empty-icon">📝</div>
+        <p>No saved transcriptions yet</p>
+        <p class="empty-hint">Start recording a meeting to create a transcription</p>
+      </div>
+      
       <div id="hasTranscription" class="transcription-info" style="display:none;">
-        <p>Файл: <span id="transcriptionFilename">-</span></p>
-        <p>Время: <span id="transcriptionTime">-</span></p>
-        <div class="download-actions">
-          <button id="downloadBtn" class="btn primary">Скачать транскрипцию</button>
-          <!-- copyTextBtn will be inserted here by JavaScript -->
-          <button id="openFolderBtn" class="btn secondary">Открыть папку загрузок</button>
+        <div class="info-group">
+          <div class="info-label">File:</div>
+          <div class="info-value" id="transcriptionFilename">-</div>
         </div>
+        
+        <div class="info-group">
+          <div class="info-label">Time:</div>
+          <div class="info-value" id="transcriptionTime">-</div>
+        </div>
+        
+        <div class="download-actions">
+          <button id="downloadBtn" class="btn primary">
+            <span class="btn-icon">💾</span> Download
+          </button>
+          <button id="copyTextBtn" class="btn secondary">
+            <span class="btn-icon">📋</span> Copy Text
+          </button>
+          <button id="openFolderBtn" class="btn secondary">
+            <span class="btn-icon">📂</span> Open Downloads
+          </button>
+        </div>
+        
         <div class="preview-section" id="previewSection" style="display:none;">
           <div class="preview-header">
-            <h3>Предпросмотр</h3>
-            <button id="togglePreviewBtn" class="btn link">Показать текст</button>
+            <h3>Preview</h3>
+            <button id="togglePreviewBtn" class="btn link">Show Text</button>
           </div>
           <div class="preview-content" id="previewContent" style="display:none;">
             <div class="preview-text" id="previewText"></div>
@@ -49,8 +86,40 @@
       </div>
     </div>
     
+    <!-- Progress indicator for ongoing jobs -->
+    <div id="progressContainer" class="progress-container" style="display:none;">
+      <div class="progress-info">
+        <span id="progressText">Processing audio...</span>
+        <div class="progress-bar">
+          <div class="progress-fill" id="progressFill"></div>
+        </div>
+      </div>
+    </div>
+    
     <div class="footer">
-      <button id="settingsBtn" class="btn link">Настройки</button>
+      <button id="settingsBtn" class="btn link">Settings</button>
+      <span class="version">v1.0.0</span>
+    </div>
+  </div>
+  
+  <!-- Modals -->
+  <div id="permissionModal" class="modal" style="display:none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Permission Required</h3>
+        <span class="close-modal" id="closePermissionModal">&times;</span>
+      </div>
+      <div class="modal-body">
+        <p>To record and transcribe Google Meet calls, this extension needs permission to access audio.</p>
+        <p>Please click "Allow" when prompted by the browser.</p>
+        <div class="permission-image">
+          <img src="images/permission-hint.png" alt="Permission dialog example">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="requestPermissionBtn" class="btn primary">Request Permission</button>
+        <button id="cancelPermissionBtn" class="btn secondary">Cancel</button>
+      </div>
     </div>
   </div>
   

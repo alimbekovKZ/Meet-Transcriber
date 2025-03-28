@@ -111,7 +111,7 @@ optionsForm.addEventListener('submit', (e) => {
     // Validate API key - basic check to ensure it's not empty
     const apiKey = apiKeyInput.value.trim();
     if (!apiKey) {
-        showAlert('Пожалуйста, введите API ключ', 'error');
+        showAlert('Please enter an API key', 'error');
         return;
     }
     
@@ -136,7 +136,7 @@ optionsForm.addEventListener('submit', (e) => {
         filenameTemplate: filenameTemplateInput.value
     }, () => {
         // Show success message
-        showAlert('Настройки успешно сохранены!', 'success');
+        showAlert('Settings saved successfully!', 'success');
     });
 });
 

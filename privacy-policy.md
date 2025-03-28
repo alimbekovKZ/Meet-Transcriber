@@ -1,6 +1,6 @@
 # Privacy Policy for Google Meet Transcription Extension
 
-*Last Updated: [Current Date]*
+*Last Updated: 28/03/2025*
 
 ## Introduction
 

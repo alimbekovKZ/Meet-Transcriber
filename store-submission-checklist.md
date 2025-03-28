@@ -22,7 +22,7 @@
 - [ ] Full description (up to 16,000 characters)
 - [ ] Privacy policy URL
 - [ ] Website URL (optional)
-- [ ] Support email
+- [X] Support email
 
 ## Technical Requirements
 
