@@ -57,18 +57,18 @@
   - [ ] Audio capture from Google Meet
   - [ ] Transcription process
   - [ ] File saving and downloading
-  - [ ] UI interactions and feedback
+  - [X] UI interactions and feedback
 - [ ] Test with different meeting lengths:
   - [ ] Short meetings (< 5 minutes)
   - [ ] Medium meetings (15-30 minutes)
   - [ ] Long meetings (1+ hour)
-- [ ] Test on different Chrome versions
-- [ ] Test with different audio sources
+- [X] Test on different Chrome versions
+- [X] Test with different audio sources
 
 ### Edge Cases
 - [ ] Test with no internet connection
 - [ ] Test recovery after connection loss
-- [ ] Test with invalid API key
+- [X] Test with invalid API key
 - [ ] Test with permission denial
 - [ ] Test when tabs are closed during recording
 
